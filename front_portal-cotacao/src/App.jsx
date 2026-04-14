@@ -4,6 +4,8 @@ import Login from "./components/Login/Login";
 import TruckIcon from "./components/TruckIcon";
 import TruckIconTruck from "./components/TruckIconTruck";
 import Layout from "./components/Layout";
+import NovaCotacao from "./pages/NovaCotacao";
+import Configuracoes from "./pages/Configuracoes";
 
 // 1. Criamos um componente apenas para a tela de Login (com a animação)
 const LoginView = () => {
@@ -52,13 +54,13 @@ function App() {
         {/* Rotas protegidas (Com a Navbar Lateral do Layout) */}
         <Route element={<Layout />}>
           <Route path="/dashboard" element={<h1 className="text-2xl font-bold">Indicadores de Performance</h1>} />
-          <Route path="/cotacao" element={<h1 className="text-2xl font-bold">Nova Cotação de Frete</h1>} />
+          <Route path="/cotacao" element={<NovaCotacao />} />
           
           {/* ADICIONE ESTAS DUAS LINHAS ABAIXO */}
           <Route path="/consultar" element={<h1 className="text-2xl font-bold">Histórico de Cotações</h1>} />
           <Route path="/relatorios" element={<h1 className="text-2xl font-bold">Relatórios Operacionais</h1>} />
           
-          <Route path="/configuracao" element={<h1 className="text-2xl font-bold">Configurações</h1>} />
+          <Route path="/configuracao" element={<Configuracoes />} />
         </Route>
 
         {/* Redireciona qualquer rota inexistente para o login */}
