@@ -1,0 +1,29 @@
+# Ambientes Virtuais (Obrigatório ignorar)
+venv/
+.venv/
+env/
+
+# Cache do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Banco de Dados local (para não misturar com o Postgres do Docker)
+*.sqlite3
+
+# Logs e arquivos temporários
+*.log
+.DS_Store
+
+# Controle de Versão (não precisa ir para o container)
+.git/
+.gitignore
+
+# Configurações de editores
+.vscode/
+.idea/
+
+# Docker (não precisa copiar os próprios arquivos de config)
+Dockerfile
+.dockerignore

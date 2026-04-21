@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:15
+    container_name: Rotalume_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5325:5432"
+    #ports:
+     # - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      -  rotalume_nt
+
+  backend:
+    build: ./back_portal-cotacao
+    container_name: Rotalume_back
+    command: python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./back_portal-cotacao:/app
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      
+    depends_on:
+      - db
+    networks:
+      - rotalume_nt
+
+  frontend:
+    build: ./front_portal-cotacao
+    container_name: Rotalume_front
+    command: npm run dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./front_portal-cotacao:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    stdin_open: true
+    tty: true
+    depends_on:
+      - backend
+    networks:
+      - rotalume_nt
+
+networks:
+  rotalume_nt:
+    external: true
+
+volumes:
+  postgres_data:
+

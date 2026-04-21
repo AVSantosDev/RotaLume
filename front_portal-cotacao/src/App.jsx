@@ -17,7 +17,7 @@ const LoginView = () => {
         <h1 className="text-4xl font-black text-slate-800 tracking-tighter">
           Rota<span className="text-blue-600">Lume</span>
         </h1>
-        <p className="text-slate-500 mt-1 text-xs font-semibold uppercase tracking-[0.2em]">Cotação Inteligente Spot</p>
+        <p className="text-slate-500 mt-1 text-xs font-semibold uppercase tracking-[0.2em]">Cotação Spot Inteligente</p>
       </div>
 
       {/* Contêiner da animação */}
