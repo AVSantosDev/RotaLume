@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Map, Truck, DollarSign, Plus, Search, ArrowUpDown, Trash2, Settings2, Percent, ShieldCheck, LayoutList, ChevronRight } from 'lucide-react';
+import { Map, Truck, DollarSign, Plus, Search, ArrowUpDown, Trash2, Settings2 } from 'lucide-react';
 
 const Configuracoes = () => {
   const [activeTab, setActiveTab] = useState('icms'); 
   const [activeSubTab, setActiveSubTab] = useState('veiculos'); 
-  const [subAbaAtiva, setSubAbaAtiva] = useState('impostos'); // Controle das sub-abas de taxas
+  const [subAbaAtiva, setSubAbaAtiva] = useState('impostos');
   const [clienteMarkupAtivo, setClienteMarkupAtivo] = useState('DIVERSOS');
 
   // Estados de Dados
@@ -28,7 +28,6 @@ const Configuracoes = () => {
 
   const API_BASE = 'http://localhost:8000';
 
-  // --- CARREGAMENTO DE DADOS ---
   const carregarTudo = () => {
     fetch(`${API_BASE}/icms/`).then(res => res.json()).then(data => setListaIcms(data)).catch(err => console.error(err));
     fetch(`${API_BASE}/veiculos/`).then(res => res.json()).then(data => setListaVeiculos(data)).catch(err => console.error(err));
@@ -38,7 +37,6 @@ const Configuracoes = () => {
 
   useEffect(() => { carregarTudo(); }, []);
 
-  // --- LÓGICA DE FILTRO ---
   const dadosFiltrados = useMemo(() => {
     const termo = busca.trim().toUpperCase();
     let base = [];
@@ -52,7 +50,6 @@ const Configuracoes = () => {
         base = listaSemireboques.filter(s => s.tipo_semireboque.toUpperCase().includes(termo));
       }
     } else if (activeTab === 'taxas') {
-      // Filtra pela categoria da sub-aba e, se for markup, pelo cliente ativo
       base = listaTaxas.filter(t => 
         t.categoria.toLowerCase() === subAbaAtiva && 
         (subAbaAtiva !== 'markup' || t.sub_categoria === clienteMarkupAtivo) &&
@@ -67,7 +64,6 @@ const Configuracoes = () => {
     });
   }, [activeTab, activeSubTab, subAbaAtiva, clienteMarkupAtivo, listaIcms, listaVeiculos, listaSemireboques, listaTaxas, busca, sortOrder]);
 
-  // --- FUNÇÕES DE AÇÃO ---
   const handleSalvar = async () => {
     let url = '';
     let body = {};
@@ -79,6 +75,8 @@ const Configuracoes = () => {
     } else if (activeTab === 'veiculos') {
       const rota = activeSubTab === 'veiculos' ? 'veiculos' : 'semireboques';
       url = `${API_BASE}/${rota}/` + (editandoItem ? `${editandoItem.id}/` : '');
+      
+      // AQUI MANTÉM OS CAMPOS DO BANCO DE DADOS
       body = activeSubTab === 'veiculos' 
         ? { tipo_veiculo: formData.tipo, eixos_veiculo: formData.eixos }
         : { tipo_semireboque: formData.tipo, eixos_semireboque: formData.eixos };
@@ -115,7 +113,12 @@ const Configuracoes = () => {
     if (activeTab === 'icms') {
       setFormData({ ...formData, origem: item.origem, destino: item.destino, aliquota: item.aliquota });
     } else if (activeTab === 'veiculos') {
-      setFormData({ ...formData, tipo: item.tipo_veiculo || item.tipo_semireboque, eixos: item.eixos_veiculo || item.eixos_semireboque });
+      // MAPEAMENTO CORRETO DOS CAMPOS PARA O FORM
+      setFormData({ 
+        ...formData, 
+        tipo: item.tipo_veiculo || item.tipo_semireboque, 
+        eixos: item.eixos_veiculo || item.eixos_semireboque 
+      });
     } else {
       setFormData({ ...formData, descricao: item.descricao, valor: item.valor, unidade: item.unidade });
     }
@@ -133,7 +136,6 @@ const Configuracoes = () => {
       <h1 className="text-2xl font-bold text-slate-800">Painel de Configurações Operacionais</h1>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        {/* NAVEGAÇÃO PRINCIPAL */}
         <div className="flex border-b border-slate-200 bg-slate-50">
           <button onClick={() => setActiveTab('icms')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'icms' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
             <Map size={18} /> Matriz ICMS
@@ -147,7 +149,6 @@ const Configuracoes = () => {
         </div>
 
         <div className="p-6">
-          {/* BARRA DE BUSCA E AÇÕES (REPRODUZINDO SEU PADRÃO) */}
           <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-6">
             <h2 className="font-bold text-slate-700 text-lg uppercase">
               {activeTab === 'icms' ? 'Alíquotas Interestaduais' : activeTab === 'veiculos' ? (activeSubTab === 'veiculos' ? 'Frota de Tração' : 'Frota de Carga') : `Taxas: ${subAbaAtiva}`}
@@ -163,7 +164,6 @@ const Configuracoes = () => {
             </div>
           </div>
 
-          {/* CONTEÚDO: ICMS OU VEICULOS */}
           {(activeTab === 'icms' || activeTab === 'veiculos') && (
             <div className="space-y-4">
               {activeTab === 'veiculos' && (
@@ -183,7 +183,7 @@ const Configuracoes = () => {
                         <button onClick={() => handleExcluir(item.id)} className="text-red-500"><Trash2 size={12} /></button>
                       </div>
                     </div>
-                    <span className="font-bold text-slate-700 truncate">
+                    <span className="font-bold text-slate-700 truncate uppercase">
                       {activeTab === 'icms' ? `${item.origem}-${item.destino}` : (item.tipo_veiculo || item.tipo_semireboque)}
                     </span>
                     <span className="text-lg font-black text-blue-700">
@@ -195,57 +195,45 @@ const Configuracoes = () => {
             </div>
           )}
 
-          {/* SEÇÃO: IMPOSTOS E TAXAS (IMPLEMENTADA) */}
           {activeTab === 'taxas' && (
-            <div className="space-y-6">
-              {/* Navegação interna de Taxas */}
-              <div className="flex gap-6 border-b border-slate-100 pb-2">
-                {['impostos', 'custos', 'seguro', 'markup'].map(tab => (
-                   <button key={tab} onClick={() => setSubAbaAtiva(tab)} className={`text-xs font-black uppercase tracking-widest pb-2 transition-all ${subAbaAtiva === tab ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
-                    {tab}
-                   </button>
-                ))}
-              </div>
-
-              <div className="flex flex-col md:flex-row gap-6">
-                {/* Sidebar para Markup */}
-                {subAbaAtiva === 'markup' && (
-                  <div className="w-full md:w-48 space-y-1">
-                    {clientesMarkup.map(c => (
-                      <button key={c} onClick={() => setClienteMarkupAtivo(c)} className={`w-full text-left px-4 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${clienteMarkupAtivo === c ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-slate-100 text-slate-500'}`}>
-                        {c}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Grid de Itens (Mesmo visual que você já usa) */}
-                <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {dadosFiltrados.map((taxa) => (
-                    <div key={taxa.id} className="p-4 border rounded-xl bg-slate-50 flex flex-col justify-between group hover:border-blue-300 transition-all shadow-sm">
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="flex flex-col">
-                          <span className="text-[10px] text-slate-400 font-bold uppercase">{taxa.categoria}</span>
-                          <span className="font-bold text-slate-700 leading-tight">{taxa.descricao}</span>
-                        </div>
-                        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => abrirEdicao(taxa)} className="text-blue-500 p-1 hover:bg-blue-50 rounded"><Settings2 size={14} /></button>
-                          <button onClick={() => handleExcluir(taxa.id)} className="text-red-500 p-1 hover:bg-red-50 rounded"><Trash2 size={14} /></button>
-                        </div>
-                      </div>
-                      <div className="mt-auto">
-                        <span className="text-2xl font-black text-blue-700">{taxa.valor}{taxa.unidade}</span>
-                      </div>
-                    </div>
+             /* ... Manteve sua lógica de taxas original ... */
+             <div className="space-y-6">
+                <div className="flex gap-6 border-b pb-2">
+                  {['impostos', 'seguro', 'custos', 'markup', 'tabela'].map(tab => (
+                    <button key={tab} onClick={() => setSubAbaAtiva(tab)} className={`text-xs font-black uppercase pb-2 ${subAbaAtiva === tab ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-400'}`}>{tab === 'tabela' ? 'Tabela Preço' : tab}</button>
                   ))}
                 </div>
-              </div>
-            </div>
+                {/* GRID DE TAXAS IGUAL AO SEU CÓDIGO */}
+                <div className="flex flex-col md:flex-row gap-6">
+                  {(subAbaAtiva === 'markup' || subAbaAtiva === 'tabela') && (
+                    <div className="w-full md:w-48 space-y-1">
+                      {clientesMarkup.map(c => (
+                        <button key={c} onClick={() => setClienteMarkupAtivo(c)} className={`w-full text-left px-4 py-2 rounded-lg text-[10px] font-bold uppercase ${clienteMarkupAtivo === c ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-500'}`}>{c}</button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {dadosFiltrados.map(item => (
+                      <div key={item.id} className="p-4 border rounded-xl bg-slate-50 group hover:border-blue-300 transition-all">
+                        <div className="flex justify-between items-start">
+                          <span className="text-[10px] text-slate-400 font-bold uppercase">{item.categoria}</span>
+                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => abrirEdicao(item)} className="text-blue-500"><Settings2 size={16}/></button>
+                            <button onClick={() => handleExcluir(item.id)} className="text-red-500"><Trash2 size={16}/></button>
+                          </div>
+                        </div>
+                        <p className="font-bold text-slate-700">{item.descricao}</p>
+                        <p className="text-2xl font-black text-blue-700 mt-4">{item.unidade === 'R$' ? `R$ ${item.valor}` : `${item.valor}${item.unidade}`}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+             </div>
           )}
         </div>
       </div>
 
-      {/* MODAL GLOBAL (ADAPTADO) */}
+      {/* MODAL GLOBAL */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white p-6 rounded-xl shadow-xl w-full max-w-md">
@@ -256,56 +244,41 @@ const Configuracoes = () => {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-400">Origem (UF)</label>
-                        <input className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.origem} onChange={e => setFormData({...formData, origem: e.target.value.toUpperCase()})} maxLength={2} />
+                        <input className="w-full border rounded p-2 outline-none uppercase" value={formData.origem} onChange={e => setFormData({...formData, origem: e.target.value.toUpperCase()})} maxLength={2} />
                     </div>
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-400">Destino (UF)</label>
-                        <input className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.destino} onChange={e => setFormData({...formData, destino: e.target.value.toUpperCase()})} maxLength={2} />
+                        <input className="w-full border rounded p-2 outline-none uppercase" value={formData.destino} onChange={e => setFormData({...formData, destino: e.target.value.toUpperCase()})} maxLength={2} />
                     </div>
                   </div>
-                  <div>
-                    <label className="text-[10px] font-bold uppercase text-slate-400">Alíquota %</label>
-                    <input type="number" className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.aliquota} onChange={e => setFormData({...formData, aliquota: e.target.value})} />
-                  </div>
+                  <input type="number" placeholder="Alíquota %" className="w-full border rounded p-2 outline-none" value={formData.aliquota} onChange={e => setFormData({...formData, aliquota: e.target.value})} />
                 </>
               ) : activeTab === 'veiculos' ? (
                 <>
                   <div>
-                    <label className="text-[10px] font-bold uppercase text-slate-400">Tipo/Descrição</label>
-                    <input placeholder="Ex: Bitrem, Truck..." className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.tipo} onChange={e => setFormData({...formData, tipo: e.target.value})} />
+                    <label className="text-[10px] font-bold uppercase text-slate-400">Descrição</label>
+                    <input className="w-full border rounded p-2 outline-none" value={formData.tipo} onChange={e => setFormData({...formData, tipo: e.target.value})} />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold uppercase text-slate-400">Quantidade de Eixos</label>
-                    <input type="number" className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.eixos} onChange={e => setFormData({...formData, eixos: e.target.value})} />
+                    <label className="text-[10px] font-bold uppercase text-slate-400">Eixos</label>
+                    <input type="number" className="w-full border rounded p-2 outline-none" value={formData.eixos} onChange={e => setFormData({...formData, eixos: e.target.value})} />
                   </div>
                 </>
               ) : (
                 <>
-                  <div className="p-2 bg-blue-50 rounded text-[10px] font-bold text-blue-600 uppercase mb-2">
-                    {subAbaAtiva} {subAbaAtiva === 'markup' && `- ${clienteMarkupAtivo}`}
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold uppercase text-slate-400">Descrição da Taxa</label>
-                    <input className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.descricao} onChange={e => setFormData({...formData, descricao: e.target.value})} />
-                  </div>
+                  <input placeholder="Descrição" className="w-full border rounded p-2 outline-none" value={formData.descricao} onChange={e => setFormData({...formData, descricao: e.target.value})} />
                   <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Valor</label>
-                      <input type="number" className="w-full border rounded p-2 focus:border-blue-500 outline-none" value={formData.valor} onChange={e => setFormData({...formData, valor: e.target.value})} />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Unidade</label>
-                      <select className="w-full border rounded p-2 bg-white outline-none" value={formData.unidade} onChange={e => setFormData({...formData, unidade: e.target.value})}>
-                        <option value="%">%</option>
-                        <option value="R$">R$</option>
-                      </select>
-                    </div>
+                    <input type="number" placeholder="Valor" className="w-full border rounded p-2 outline-none" value={formData.valor} onChange={e => setFormData({...formData, valor: e.target.value})} />
+                    <select className="border rounded p-2 outline-none" value={formData.unidade} onChange={e => setFormData({...formData, unidade: e.target.value})}>
+                      <option value="%">%</option>
+                      <option value="R$">R$</option>
+                    </select>
                   </div>
                 </>
               )}
               <div className="flex justify-end gap-2 mt-6">
-                <button onClick={fecharModal} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded">Cancelar</button>
-                <button onClick={handleSalvar} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold transition-colors">Salvar Dados</button>
+                <button onClick={fecharModal} className="px-4 py-2 text-slate-400 font-bold uppercase text-xs">Cancelar</button>
+                <button onClick={handleSalvar} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors uppercase text-xs">Salvar</button>
               </div>
             </div>
           </div>
