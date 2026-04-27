@@ -3,9 +3,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import viewsets
 # from configuracao import configuracao_serializer
-from .models import (IcmsEstado, Imposto, CustoSeguroCarga, CustoGris,CustoDespesaOperacional, RegistroMarkup, ClienteTaxasConfig)
+from .models import (IcmsEstado, Imposto, CustoSeguroCarga, CustoGris, CustoDespesaOperacional, RegistroMarkup, ClienteTaxasConfig, MarkupClienteFaixa)
 from .configuracao_serializer import (IcmsEstadoSerializer, ImpostoSerializer, CustoSeguroCargaSerializer, CustoGrisSerializer,
-    CustoDespesaOperacionalSerializer, RegistroMarkupSerializer, ClienteTaxasConfigSerializer)
+    CustoDespesaOperacionalSerializer, RegistroMarkupSerializer, ClienteTaxasConfigSerializer, MarkupClienteFaixaSerializer)
 from django.db.models import Q
 
 
@@ -65,6 +65,10 @@ class CustoGrisViewSet(viewsets.ModelViewSet):
 class CustoDespesaOperacionalViewSet(viewsets.ModelViewSet):
     queryset = CustoDespesaOperacional.objects.all()
     serializer_class = CustoDespesaOperacionalSerializer
+
+class MarkupClienteFaixaViewSet(viewsets.ModelViewSet):
+    queryset = MarkupClienteFaixa.objects.all()
+    serializer_class = MarkupClienteFaixaSerializer
 
 
 

@@ -93,6 +93,33 @@ class CustoDespesaOperacional(models.Model):
         return f"{self.nome}: {self.valor} {sufixo}"
 
 
+class MarkupClienteFaixa(models.Model):
+    """
+    Configuração de Markup por cliente e faixa/nível.
+
+    Exemplo de uso (tela em formato de matriz):
+    - Colunas: clientes
+    - Linhas: faixas (níveis)
+    - Célula: percentual de markup
+    """
+
+    nome_cliente = models.CharField(max_length=100)
+    faixa = models.PositiveSmallIntegerField(help_text="Nível/faixa (ex: 1..n)")
+    percentual_base = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text="Base (%) usada no divisor do CTRB (ex: 59.23)")
+    percentual_markup = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text="Markup/Percentual (%) (ex: 20.00)")
+
+    class Meta:
+        verbose_name = "Configuração de Markup"
+        verbose_name_plural = "Configurações de Markup"
+        ordering = ["nome_cliente", "faixa"]
+        constraints = [
+            models.UniqueConstraint(fields=["nome_cliente", "faixa"], name="uniq_markup_cliente_faixa")
+        ]
+
+    def __str__(self):
+        return f"{self.nome_cliente} (faixa {self.faixa}): base {self.percentual_base}% / markup {self.percentual_markup}%"
+
+
 
 
 class RegistroMarkup(models.Model):

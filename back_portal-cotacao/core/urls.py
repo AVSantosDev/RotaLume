@@ -4,7 +4,7 @@ from django.urls import path, include
 from rest_framework import routers
 from novacotacao.novacotacao_viewsets import(ClienteViewSet, SolicitanteViewSet, VeiculoViewSet, SemireboqueViewSet)
 from configuracao.configuracao_viewsets import (IcmsEstadoViewSet, ImpostoViewSet, CustoSeguroCargaViewSet, CustoGrisViewSet,
-    CustoDespesaOperacionalViewSet, RegistroMarkupViewSet, ClienteTaxasConfigViewSet)
+    CustoDespesaOperacionalViewSet, RegistroMarkupViewSet, ClienteTaxasConfigViewSet, MarkupClienteFaixaViewSet)
 
 
 router = routers.DefaultRouter()
@@ -19,6 +19,7 @@ router.register(r'gris', CustoGrisViewSet, basename='gris')
 router.register(r'despesas-operacionais', CustoDespesaOperacionalViewSet, basename='despesas')
 router.register(r'registros-markup', RegistroMarkupViewSet, basename='registros-markup')
 router.register(r'cliente-taxas-config',ClienteTaxasConfigViewSet, basename='cliente-taxas-config')
+router.register(r'markup-config', MarkupClienteFaixaViewSet, basename='markup-config')
 
 
 urlpatterns = [

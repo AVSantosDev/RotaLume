@@ -12,6 +12,13 @@ const NovaCotacao = () => {
 
   const [sugestoesClientes, setSugestoesClientes] = useState([]);
   const [listaSolicitantes, setListaSolicitantes] = useState([]);
+  const [listaClienteTaxas, setListaClienteTaxas] = useState([]);
+  const [listaImpostos, setListaImpostos] = useState([]);
+  const [listaSeguros, setListaSeguros] = useState([]);
+  const [listaGris, setListaGris] = useState([]);
+  const [listaDespesas, setListaDespesas] = useState([]);
+
+  const clienteTaxasSelecionado = useRef(null);
 
   // --- ESTADOS DE UI ---
   const [sugestaoOrigem, setSugestaoOrigem] = useState([]);
@@ -23,6 +30,7 @@ const NovaCotacao = () => {
     cliente: '', cliente_id: '', endereco: '', cep: '', fone: '', contato: '', email: '',
     origem: '', uf_origem: '', destino: '', uf_destino: '', observacao: '',
     contratacao: 'SPOT',
+    tabelaCliente: '',
     tipoVeiculo: '',
     tipoSemireboque: '',
     ctrbOrcado: 0, pedagioCusto: 0,
@@ -42,15 +50,30 @@ const NovaCotacao = () => {
   useEffect(() => {
     const carregarListas = async () => {
       try {
-        const [resV, resS] = await Promise.all([
+        const [resV, resS, resCT, resImp, resSeg, resGris, resDesp] = await Promise.all([
           fetch('http://localhost:8000/veiculos/'),
-          fetch('http://localhost:8000/semireboques/')
+          fetch('http://localhost:8000/semireboques/'),
+          fetch('http://localhost:8000/cliente-taxas-config/'),
+          fetch('http://localhost:8000/impostos/'),
+          fetch('http://localhost:8000/seguros/'),
+          fetch('http://localhost:8000/gris/'),
+          fetch('http://localhost:8000/despesas-operacionais/')
         ]);
         const dataV = await resV.json();
         const dataS = await resS.json();
+        const dataCT = await resCT.json();
+        const dataImp = await resImp.json();
+        const dataSeg = await resSeg.json();
+        const dataGris = await resGris.json();
+        const dataDesp = await resDesp.json();
         
         setVeiculosDoBanco(dataV);
         setReboquesDoBanco(dataS);
+        setListaClienteTaxas(dataCT);
+        setListaImpostos(dataImp);
+        setListaSeguros(dataSeg);
+        setListaGris(dataGris);
+        setListaDespesas(dataDesp);
         
         // Seta o primeiro item como padrão usando as chaves corretas da sua API
         if (dataV.length > 0) {
@@ -58,6 +81,10 @@ const NovaCotacao = () => {
         }
         if (dataS.length > 0) {
           setForm(f => ({ ...f, tipoSemireboque: dataS[0].tipo_semireboque }));
+        }
+        if (dataCT.length > 0) {
+          setForm(f => ({ ...f, tabelaCliente: dataCT[0].nome_cliente }));
+          clienteTaxasSelecionado.current = dataCT[0];
         }
       } catch (error) {
         console.error("Erro ao carregar dados do Django:", error);
@@ -89,6 +116,14 @@ const NovaCotacao = () => {
       email: c.email || ''
     });
     setSugestoesClientes([]);
+
+    // tenta aplicar automaticamente a tabela do cliente (ClienteTaxasConfig)
+    const nome = (c?.nome_empresa || '').toUpperCase().trim();
+    const cfg = listaClienteTaxas.find(x => (x?.nome_cliente || '').toUpperCase().trim() === nome);
+    if (cfg) {
+      clienteTaxasSelecionado.current = cfg;
+      setForm(prev => ({ ...prev, tabelaCliente: cfg.nome_cliente }));
+    }
     
     // Busca os solicitantes vinculados a este cliente específico
     try {
@@ -126,24 +161,106 @@ const NovaCotacao = () => {
     }
   };
 
+  // ICMS pela matriz (origem + destino)
+  useEffect(() => {
+    const origem = (form.uf_origem || '').toUpperCase();
+    const destino = (form.uf_destino || '').toUpperCase();
+    if (!origem || !destino) return;
+
+    const carregarIcms = async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/icms/?origem=${origem}`);
+        const data = await res.json();
+        const achou = (data || []).find(r => (r.destino || '').toUpperCase() === destino);
+        const aliquota = achou ? Number(achou.aliquota) : 12;
+        setForm(prev => ({ ...prev, aliquotaIcms: aliquota }));
+      } catch (e) {
+        console.error('Erro ICMS:', e);
+      }
+    };
+
+    carregarIcms();
+  }, [form.uf_origem, form.uf_destino]);
+
 
 
 
   // --- LÓGICA DE CÁLCULO (Atualizado para reagir ao form) ---
   useEffect(() => {
-    const impostoFixo = 0.0975;
-    const aliquotaIcms = 0.12;
+    const normalizarNumero = (v) => {
+      if (v === null || v === undefined || v === '') return 0;
+      if (typeof v === 'string') {
+        const n = parseFloat(v.toString().replace(',', '.'));
+        return Number.isFinite(n) ? n : 0;
+      }
+      return Number.isFinite(Number(v)) ? Number(v) : 0;
+    };
+
+    const cfg = clienteTaxasSelecionado.current;
+
+    const impostosMap = new Map(
+      (listaImpostos || [])
+        .filter(i => i?.nome)
+        .map(i => [i.nome.toUpperCase(), normalizarNumero(i.aliquota)])
+    );
+
+    const impostoFixo =
+      (impostosMap.get('PIS/COFINS') || 0) / 100 +
+      (impostosMap.get('IR/CSLL') || 0) / 100 +
+      (impostosMap.get('CPRB') || 0) / 100;
+
+    // ICMS pela matriz (origem/destino). Se não achar, mantém 12% como fallback.
+    const aliquotaIcms = normalizarNumero(form.aliquotaIcms ?? 12) / 100;
+
     const fatorImpostos = 1 - (aliquotaIcms + impostoFixo);
 
-    let fretePesoBase = Number(form.ctrbOrcado) / (1 - (form.percentualLairDesejada / 100));
+    let fretePesoBase = normalizarNumero(form.ctrbOrcado) / (1 - (normalizarNumero(form.percentualLairDesejada) / 100));
+
+    // Seguro: usa ClienteTaxasConfig (taxa 1 / taxa 2) com limite de mercadoria
+    const mercadoria = normalizarNumero(form.valorMercadoria);
+    const limiteMercadoria = normalizarNumero(cfg?.valor_mercadoria_limite);
+    const seguroTx1 = normalizarNumero(cfg?.seguro_taxa_1);
+    const seguroTx2 = normalizarNumero(cfg?.seguro_taxa_2);
+    const seguroPct = (limiteMercadoria > 0 && mercadoria > limiteMercadoria ? seguroTx2 : seguroTx1) / 100;
+    const seguroBase = mercadoria * seguroPct;
+
+    // GRIS: usa categoria GERAL (se existir), senão 0
+    const grisGeral = (listaGris || []).find(g => (g?.categoria || '').toUpperCase() === 'GERAL');
+    const grisBase = grisGeral ? normalizarNumero(grisGeral.valor) : 0;
+
+    // Ajudante: usa ClienteTaxasConfig (valor_ajudante), fallback 280
+    const ajudanteUnit = cfg ? normalizarNumero(cfg.valor_ajudante) : 280;
+    const cargaBase = normalizarNumero(form.qtdAjudante) * ajudanteUnit;
+
+    // Taxas de entrega: tenta mapear pelo tipo de veículo (se tiver config)
+    const tipoV = (form.tipoVeiculo || '').toUpperCase();
+    let taxaEntrega = 0;
+    if (cfg) {
+      if (tipoV.includes('UTIL')) taxaEntrega = normalizarNumero(cfg.taxa_utilitarios);
+      else if (tipoV.includes('3/4')) taxaEntrega = normalizarNumero(cfg.taxa_3_4);
+      else if (tipoV.includes('TOCO')) taxaEntrega = normalizarNumero(cfg.taxa_toco);
+      else if (tipoV.includes('TRUCK')) taxaEntrega = normalizarNumero(cfg.taxa_truck);
+      else if (tipoV.includes('4X2')) taxaEntrega = normalizarNumero(cfg.taxa_cavalo_4x2);
+      else if (tipoV.includes('6X2')) taxaEntrega = normalizarNumero(cfg.taxa_cavalo_6x2);
+    }
+
+    // Custos/despesas operacionais: soma moeda + aplica percentual sobre o frete peso base
+    const despesas = listaDespesas || [];
+    const somaMoeda = despesas
+      .filter(d => (d?.unidade || '').toUpperCase() === 'MOEDA')
+      .reduce((acc, d) => acc + normalizarNumero(d.valor), 0);
+    const somaPercent = despesas
+      .filter(d => (d?.unidade || '').toUpperCase() === 'PERCENTUAL')
+      .reduce((acc, d) => acc + normalizarNumero(d.valor), 0);
+    const custoDespesas = somaMoeda + fretePesoBase * (somaPercent / 100);
 
     const sIcms = {
       fretePeso: fretePesoBase || 0,
-      seguro: (Number(form.valorMercadoria) * 0.001),
-      gris: (Number(form.valorMercadoria) * 0.0008),
-      pedagio: Number(form.pedagioCusto),
-      carga: Number(form.qtdAjudante) * 280,
-      adicional: Number(form.taxaAdicionalEntrega),
+      seguro: seguroBase,
+      gris: grisBase,
+      pedagio: normalizarNumero(form.pedagioCusto),
+      carga: cargaBase,
+      adicional: normalizarNumero(form.taxaAdicionalEntrega) + taxaEntrega + custoDespesas,
       total: 0
     };
     sIcms.total = Object.values(sIcms).reduce((a, b) => a + b, 0);
@@ -171,7 +288,7 @@ const NovaCotacao = () => {
     const margemReal = sIcms.total > 0 ? ((sIcms.total - Number(form.ctrbOrcado)) / sIcms.total) * 100 : 0;
 
     setCalculos({ sIcms, cIcms, descSeguro, lairReal: margemReal.toFixed(2) });
-  }, [form]);
+  }, [form, listaImpostos, listaGris, listaDespesas]);
 
   const formatBRL = (val) => Number(val).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -318,7 +435,22 @@ const NovaCotacao = () => {
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col">
                 <label className="text-[10px] font-bold text-slate-500 uppercase">Contratação</label>
-                <input type="text" value="SPOT" readOnly className="border-b border-slate-200 py-1 text-sm font-bold text-blue-700 bg-transparent outline-none"/>
+                <select
+                  className="border-b border-slate-200 py-1 text-sm font-bold text-blue-700 bg-transparent outline-none"
+                  value={form.tabelaCliente || ''}
+                  onChange={(e) => {
+                    const nome = e.target.value;
+                    const cfg = listaClienteTaxas.find(x => x.nome_cliente === nome);
+                    clienteTaxasSelecionado.current = cfg || null;
+                    setForm(prev => ({ ...prev, tabelaCliente: nome }));
+                  }}
+                >
+                  {listaClienteTaxas.map((c) => (
+                    <option key={c.id} value={c.nome_cliente}>
+                      {c.nome_cliente}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {/* <div className="flex flex-col">
