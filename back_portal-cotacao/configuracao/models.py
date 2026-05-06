@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 
 # Create your models here.
 
@@ -23,15 +24,47 @@ class Imposto(models.Model):
     """
     Tabela para armazenar alíquotas de impostos como PIS/COFINS, IR/CSLL e CPRB.
     """
-    nome = models.CharField(max_length=50, unique=True)
+    nome = models.CharField(max_length=60, unique=True)
     aliquota = models.DecimalField(max_digits=5, decimal_places=2) # Ex: 1.65, 34.00
+    ordem = models.PositiveSmallIntegerField(
+        default=100,
+        help_text="Ordem na tela e nos relatórios (menor = primeiro).",
+    )
 
     class Meta:
         verbose_name = "Imposto"
         verbose_name_plural = "Impostos"
+        ordering = ["ordem", "nome"]
 
     def __str__(self):
         return f"{self.nome}: {self.aliquota}%"
+
+
+
+
+class MatrizISS(models.Model):
+    """
+    Model dedicado para a Matriz de ISS.
+    Mantém a estrutura separada do model Imposto para permitir 
+    gerenciamento por cidade, igual à lógica de UF do ICMS.
+    """
+    cidade = models.CharField(max_length=100, verbose_name="Cidade")
+    aliquota = models.DecimalField(max_digits=5, decimal_places=2, verbose_name="Alíquota (%)")
+    data_cadastro = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Matriz ISS"
+        verbose_name_plural = "Matrizes ISS"
+        ordering = ['cidade']
+        constraints = [
+            models.UniqueConstraint(fields=['cidade'], name='unique_iss_cidade')
+        ]
+
+    def __str__(self):
+        return f"{self.cidade}: {self.aliquota}%"
+
+
+
 
 
 class CustoSeguroCarga(models.Model):
@@ -104,20 +137,60 @@ class MarkupClienteFaixa(models.Model):
     """
 
     nome_cliente = models.CharField(max_length=100)
-    faixa = models.PositiveSmallIntegerField(help_text="Nível/faixa (ex: 1..n)")
-    percentual_base = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text="Base (%) usada no divisor do CTRB (ex: 59.23)")
-    percentual_markup = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text="Markup/Percentual (%) (ex: 20.00)")
+
+    # --- REGRA POR LAIR (equiv. C26 na planilha) ---
+    percentual_markup = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Percentual LAIR (%) (ex: 20.00).",
+    )
+    percentual_base = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Percentual base (%) aplicado no CTRB (ex: 59.23).",
+    )
+
+    # Alíquotas usadas para determinar o percentual base (dinâmico por rota)
+    aliquota_bruta = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Alíquota bruta da rota (%). Ex: 12.00",
+    )
+    aliquota_reduzida = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Alíquota reduzida usada no cálculo (%). Ex: 9.60",
+    )
 
     class Meta:
         verbose_name = "Configuração de Markup"
         verbose_name_plural = "Configurações de Markup"
-        ordering = ["nome_cliente", "faixa"]
+        ordering = ["nome_cliente", "percentual_markup"]
         constraints = [
-            models.UniqueConstraint(fields=["nome_cliente", "faixa"], name="uniq_markup_cliente_faixa")
+            # Manual (sem alíquotas): não repetir (cliente, LAIR)
+            models.UniqueConstraint(
+                fields=["nome_cliente", "percentual_markup"],
+                condition=Q(aliquota_bruta__isnull=True, aliquota_reduzida__isnull=True),
+                name="uniq_markup_cliente_pctmarkup",
+            ),
+            # Dinâmico por rota: não repetir (cliente, LAIR, bruta, reduzida)
+            models.UniqueConstraint(
+                fields=["nome_cliente", "percentual_markup", "aliquota_bruta", "aliquota_reduzida"],
+                condition=Q(aliquota_bruta__isnull=False, aliquota_reduzida__isnull=False),
+                name="uniq_markup_cliente_lair_rota",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.nome_cliente} (faixa {self.faixa}): base {self.percentual_base}% / markup {self.percentual_markup}%"
+        return f"{self.nome_cliente} (LAIR {self.percentual_markup}%): base {self.percentual_base}%"
 
 
 

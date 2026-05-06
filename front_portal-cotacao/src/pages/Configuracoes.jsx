@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
-import { Map as MapIcon, Truck, DollarSign, Plus, Search, ArrowUpDown, Trash2, Settings2 } from 'lucide-react';
+import { Map as MapIcon, Building2, Truck, DollarSign, Plus, Search, ArrowUpDown, Trash2, Settings2 } from 'lucide-react';
+import { getApiBase, fetchJsonList } from '../config/api';
+import { buscarMunicipiosPorTermo } from '../lib/cidadesIbge';
 
 const Configuracoes = () => {
   const [activeTab, setActiveTab] = useState('icms'); 
@@ -9,6 +11,7 @@ const Configuracoes = () => {
 
   // Estados de Dados
   const [listaIcms, setListaIcms] = useState([]);
+  const [listaIss, setListaIss] = useState([]);
   const [listaVeiculos, setListaVeiculos] = useState([]);
   const [listaSemireboques, setListaSemireboques] = useState([]);
   const [listaTaxas, setListaTaxas] = useState([]);
@@ -18,6 +21,7 @@ const Configuracoes = () => {
   const [listaGris, setListaGris] = useState([]);
   const [listaDespesas, setListaDespesas] = useState([]);
   const [listaMarkupConfig, setListaMarkupConfig] = useState([]);
+  const [sugestoesIssCidade, setSugestoesIssCidade] = useState([]);
 
   // Estados de UI
   const [busca, setBusca] = useState('');
@@ -47,22 +51,30 @@ const Configuracoes = () => {
   }, [listaImpostos]);
 
   const markupClientes = useMemo(() => {
-    const nomes = listaMarkupConfig.map(m => m.nome_cliente).filter(Boolean);
+    const nomes = (listaMarkupConfig || [])
+      .filter((m) => (m?.tipo || 'FAIXA').toString().toUpperCase() === 'FAIXA')
+      .map(m => m.nome_cliente)
+      .filter(Boolean);
     return [...new Set(nomes)].sort((a, b) => a.localeCompare(b));
   }, [listaMarkupConfig]);
 
-  const markupFaixas = useMemo(() => {
-    const faixas = listaMarkupConfig.map(m => Number(m.faixa)).filter(n => Number.isFinite(n));
-    return [...new Set(faixas)].sort((a, b) => a - b);
+  const markupC26Rows = useMemo(() => {
+    const rows = (listaMarkupConfig || [])
+      .filter((m) => (m?.tipo || 'FAIXA').toString().toUpperCase() === 'FAIXA')
+      .map((m) => Number(m?.percentual_markup))
+      .filter((n) => Number.isFinite(n));
+    return [...new Set(rows)].sort((a, b) => b - a);
   }, [listaMarkupConfig]);
 
   const markupMap = useMemo(() => {
     const map = new Map();
-    for (const m of listaMarkupConfig) {
-      const cliente = m?.nome_cliente;
-      const faixa = Number(m?.faixa);
-      if (!cliente || !Number.isFinite(faixa)) continue;
-      map.set(`${cliente}||${faixa}`, m);
+    for (const m of listaMarkupConfig || []) {
+      const tipo = (m?.tipo || 'FAIXA').toString().toUpperCase();
+      if (tipo !== 'FAIXA') continue;
+      const cliente = (m?.nome_cliente || '').toString().trim().toUpperCase();
+      const c26 = Number(m?.percentual_markup);
+      if (!cliente || !Number.isFinite(c26)) continue;
+      map.set(`${cliente}||${c26.toFixed(2)}`, m);
     }
     return map;
   }, [listaMarkupConfig]);
@@ -70,6 +82,9 @@ const Configuracoes = () => {
   const initialFormData = { 
     origem: '',
     destino: '',
+    cidade: '',
+    /** UF apenas para exibir "Cidade - UF" após escolha IBGE (Matriz ISS). */
+    iss_uf: '',
     aliquota: '',
     tipo: '',
     eixos: '',
@@ -98,7 +113,6 @@ const Configuracoes = () => {
     despesa_valor: '',
     despesa_unidade: 'PERCENTUAL',
     markup_nome_cliente: '',
-    markup_faixa: '',
     markup_percentual_base: '',
     markup_percentual_markup: '',
   };
@@ -106,27 +120,51 @@ const Configuracoes = () => {
   // FormData unificado
   const [formData, setFormData] = useState(initialFormData);
 
-  const API_BASE = 'http://localhost:8000';
+  const API_BASE = getApiBase();
 
-  const carregarTudo = () => {
-    fetch(`${API_BASE}/icms/`).then(res => res.json()).then(data => setListaIcms(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/veiculos/`).then(res => res.json()).then(data => setListaVeiculos(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/semireboques/`).then(res => res.json()).then(data => setListaSemireboques(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/taxas/`).then(res => res.json()).then(data => setListaTaxas(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/impostos/`).then(res => res.json()).then(data => setListaImpostos(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/seguros/`).then(res => res.json()).then(data => setListaSeguros(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/gris/`).then(res => res.json()).then(data => setListaGris(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/despesas-operacionais/`).then(res => res.json()).then(data => setListaDespesas(data)).catch(err => console.error(err));
-    fetch(`${API_BASE}/markup-config/`).then(res => res.json()).then(data => setListaMarkupConfig(data)).catch(err => console.error(err));
-    
-    carregarTabelaPreco();
+  const carregarTabelaPreco = async () => {
+    const data = await fetchJsonList('/cliente-taxas-config/');
+    setListaTabelas(data);
+  };
 
+  const carregarTudo = async () => {
+    const [
+      icms,
+      iss,
+      veiculos,
+      semireboques,
+      impostos,
+      seguros,
+      gris,
+      despesas,
+      markup,
+    ] = await Promise.all([
+      fetchJsonList('/icms/'),
+      fetchJsonList('/matriz-iss/'),
+      fetchJsonList('/veiculos/'),
+      fetchJsonList('/semireboques/'),
+      fetchJsonList('/impostos/'),
+      fetchJsonList('/seguros/'),
+      fetchJsonList('/gris/'),
+      fetchJsonList('/despesas-operacionais/'),
+      fetchJsonList('/markup-config/'),
+    ]);
+    setListaIcms(icms);
+    setListaIss(iss);
+    setListaVeiculos(veiculos);
+    setListaSemireboques(semireboques);
+    setListaTaxas([]);
+    setListaImpostos(impostos);
+    setListaSeguros(seguros);
+    setListaGris(gris);
+    setListaDespesas(despesas);
+    setListaMarkupConfig(markup);
+    await carregarTabelaPreco();
   };
 
   //---CARREGA OS DADOS NA TELA---
   useEffect(() => {
     carregarTudo();
-    carregarTabelaPreco(); 
   }, []);
 
 
@@ -136,6 +174,8 @@ const Configuracoes = () => {
 
     if (activeTab === 'icms') {
       base = listaIcms.filter(i => i.origem.includes(termo) || i.destino.includes(termo));
+    } else if (activeTab === 'iss') {
+      base = listaIss.filter(i => (i.cidade ?? '').toUpperCase().includes(termo));
     } else if (activeTab === 'veiculos') {
       if (activeSubTab === 'veiculos') {
         base = listaVeiculos.filter(v => v.tipo_veiculo.toUpperCase().includes(termo));
@@ -175,11 +215,11 @@ const Configuracoes = () => {
     }
 
     return base.sort((a, b) => {
-        const valA = (a.nome_cliente || a.nome || a.tipo || a.origem || a.tipo_veiculo || a.tipo_semireboque || a.descricao || "").toString();
-        const valB = (b.nome_cliente || b.nome || b.tipo || b.origem || b.tipo_veiculo || b.tipo_semireboque || b.descricao || "").toString();
+        const valA = (a.nome_cliente || a.nome || a.tipo || a.cidade || a.origem || a.tipo_veiculo || a.tipo_semireboque || a.descricao || "").toString();
+        const valB = (b.nome_cliente || b.nome || b.tipo || b.cidade || b.origem || b.tipo_veiculo || b.tipo_semireboque || b.descricao || "").toString();
         return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
     });
-  }, [activeTab, activeSubTab, subAbaAtiva, clienteMarkupAtivo, seguroSubTab, listaIcms, listaVeiculos, listaSemireboques, listaTaxas, listaTabelas, listaImpostos, listaSeguros, listaGris, listaDespesas, listaMarkupConfig, busca, sortOrder]);
+  }, [activeTab, activeSubTab, subAbaAtiva, clienteMarkupAtivo, seguroSubTab, listaIcms, listaIss, listaVeiculos, listaSemireboques, listaTaxas, listaTabelas, listaImpostos, listaSeguros, listaGris, listaDespesas, listaMarkupConfig, busca, sortOrder]);
 
 
   
@@ -196,6 +236,11 @@ const Configuracoes = () => {
     if (activeTab === 'icms') {
       url = `${API_BASE}/icms/` + (editandoItem ? `${editandoItem.id}/` : '');
       body = { origem: formData.origem.toUpperCase(), destino: formData.destino.toUpperCase(), aliquota: formData.aliquota };
+    } else if (activeTab === 'iss') {
+      url = `${API_BASE}/matriz-iss/` + (editandoItem ? `${editandoItem.id}/` : '');
+      const cidadeNome = (formData.cidade || '').trim();
+      const aliqNum = parseFloat(String(formData.aliquota ?? '').replace(',', '.'));
+      body = { cidade: cidadeNome, aliquota: aliqNum };
     } else if (activeTab === 'veiculos') {
       const rota = activeSubTab === 'veiculos' ? 'veiculos' : 'semireboques';
       url = `${API_BASE}/${rota}/` + (editandoItem ? `${editandoItem.id}/` : '');
@@ -244,7 +289,7 @@ const Configuracoes = () => {
         url = `${API_BASE}/markup-config/` + (editandoItem ? `${editandoItem.id}/` : '');
         body = {
           nome_cliente: formData.markup_nome_cliente,
-          faixa: Number(formData.markup_faixa),
+          tipo: 'FAIXA',
           percentual_base: formData.markup_percentual_base,
           percentual_markup: formData.markup_percentual_markup,
         };
@@ -260,14 +305,56 @@ const Configuracoes = () => {
       }
     }
 
+    if (!url) {
+      alert('Não foi possível identificar o recurso a salvar.');
+      return;
+    }
+
+    if (activeTab === 'iss') {
+      if (!body.cidade) {
+        alert('Informe o município (use a lista do IBGE ao digitar 3+ letras).');
+        return;
+      }
+      if (!Number.isFinite(body.aliquota)) {
+        alert('Informe uma alíquota válida (%).');
+        return;
+      }
+    }
+
     try {
       const res = await fetch(url, {
         method: metodo,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       });
-      if (res.ok) { carregarTudo(); fecharModal(); }
-    } catch (err) { console.error("Erro ao salvar:", err); }
+      if (res.ok) {
+        await carregarTudo();
+        fecharModal();
+        return;
+      }
+      let detail = `Erro ao salvar (${res.status})`;
+      try {
+        const errBody = await res.json();
+        if (typeof errBody === 'string') detail = errBody;
+        else if (errBody?.error) detail = String(errBody.error);
+        else if (errBody?.detail) detail = String(errBody.detail);
+        else if (errBody && typeof errBody === 'object') {
+          const msgs = Object.entries(errBody).flatMap(([k, v]) => {
+            const val = Array.isArray(v) ? v.join(' ') : String(v);
+            return `${k}: ${val}`;
+          });
+          detail = msgs.length ? msgs.join(' | ') : JSON.stringify(errBody);
+        }
+      } catch {
+        try {
+          detail = (await res.text()).slice(0, 240);
+        } catch { /* ignore */ }
+      }
+      alert(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } catch (err) {
+      console.error('Erro ao salvar:', err);
+      alert('Falha de rede ao salvar. Verifique se o backend está no ar.');
+    }
   };
 
 
@@ -282,6 +369,8 @@ const Configuracoes = () => {
     // Define a rota baseada na aba e sub-aba ativa
     if (activeTab === 'icms') {
       rota = 'icms';
+    } else if (activeTab === 'iss') {
+      rota = 'matriz-iss';
     } else if (activeTab === 'veiculos') {
       rota = activeSubTab === 'veiculos' ? 'veiculos' : 'semireboques';
     } else if (activeTab === 'taxas') {
@@ -360,12 +449,18 @@ const Configuracoes = () => {
       setFormData({
         ...formData,
         markup_nome_cliente: item.nome_cliente ?? '',
-        markup_faixa: item.faixa ?? '',
         markup_percentual_base: item.percentual_base ?? '',
         markup_percentual_markup: item.percentual_markup ?? '',
       });
     } else if (activeTab === 'icms') {
       setFormData({ ...formData, origem: item.origem, destino: item.destino, aliquota: item.aliquota });
+    } else if (activeTab === 'iss') {
+      setFormData({
+        ...formData,
+        cidade: item.cidade ?? '',
+        iss_uf: '',
+        aliquota: item.aliquota ?? '',
+      });
     } else if (activeTab === 'veiculos') {
       // MAPEAMENTO CORRETO DOS CAMPOS PARA O FORM
       setFormData({ 
@@ -386,6 +481,26 @@ const Configuracoes = () => {
     setIsModalOpen(false);
     setEditandoItem(null);
     setFormData(initialFormData);
+    setSugestoesIssCidade([]);
+  };
+
+  const buscaIssCidades = async (termo) => {
+    if (termo.length < 3) {
+      setSugestoesIssCidade([]);
+      return;
+    }
+    try {
+      const filtrados = await buscarMunicipiosPorTermo(termo, 8);
+      setSugestoesIssCidade(filtrados);
+    } catch (e) {
+      console.error(e);
+      setSugestoesIssCidade([]);
+    }
+  };
+
+  const selecionarIssCidade = (item) => {
+    setFormData((prev) => ({ ...prev, cidade: item.cidade, iss_uf: item.uf || '' }));
+    setSugestoesIssCidade([]);
   };
 
 
@@ -410,34 +525,20 @@ const Configuracoes = () => {
     return `${n}%`;
   };
 
-  const carregarImpostos = () => {
-    fetch(`${API_BASE}/impostos/`)
-      .then(res => res.json())
-      .then(data => setListaImpostos(data));
+  const carregarImpostos = async () => {
+    setListaImpostos(await fetchJsonList('/impostos/'));
   };
-  
-  const carregarSeguros = () => {
-    fetch(`${API_BASE}/seguros/`) // CustoSeguroCarga
-      .then(res => res.json())
-      .then(data => setListaSeguros(data));
+
+  const carregarSeguros = async () => {
+    setListaSeguros(await fetchJsonList('/seguros/'));
   };
-  
-  const carregarGris = () => {
-    fetch(`${API_BASE}/gris/`) // CustoGris
-      .then(res => res.json())
-      .then(data => setListaGris(data));
+
+  const carregarGris = async () => {
+    setListaGris(await fetchJsonList('/gris/'));
   };
-  
-  const carregarDespesas = () => {
-    fetch(`${API_BASE}/despesas-operacionais/`) // CustoDespesaOperacional
-      .then(res => res.json())
-      .then(data => setListaDespesas(data));
-  };
-  
-  const carregarTabelaPreco = () => {
-    fetch(`${API_BASE}/cliente-taxas-config/`) // ClienteTaxasConfig
-      .then(res => res.json())
-      .then(data => setListaTabelas(data));
+
+  const carregarDespesas = async () => {
+    setListaDespesas(await fetchJsonList('/despesas-operacionais/'));
   };
 
   const salvarTabelaPreco = async (formData) => {
@@ -479,7 +580,7 @@ const Configuracoes = () => {
   
       if (res.ok) {
         console.log(">>> [SUCESSO] Resposta:", respostaServidor);
-        carregarTabelaPreco();
+        await carregarTabelaPreco();
         fecharModal();
       } else {
         console.error(">>> [ERRO DJANGO] Detalhes:", respostaServidor);
@@ -505,6 +606,9 @@ const Configuracoes = () => {
           <button onClick={() => setActiveTab('icms')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'icms' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
             <MapIcon size={18} /> Matriz ICMS
           </button>
+          <button onClick={() => setActiveTab('iss')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'iss' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+            <Building2 size={18} /> Matriz ISS
+          </button>
           <button onClick={() => setActiveTab('veiculos')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'veiculos' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
             <Truck size={18} /> Veículos e Semirreboques
           </button>
@@ -516,7 +620,7 @@ const Configuracoes = () => {
         <div className="p-6">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-6">
             <h2 className="font-bold text-slate-700 text-lg uppercase">
-              {activeTab === 'icms' ? 'Alíquotas Interestaduais' : activeTab === 'veiculos' ? (activeSubTab === 'veiculos' ? 'Frota de Tração' : 'Frota de Carga') : `Taxas: ${subAbaAtiva}`}
+              {activeTab === 'icms' ? 'Alíquotas Interestaduais' : activeTab === 'iss' ? 'Alíquotas de ISS por Município' : activeTab === 'veiculos' ? (activeSubTab === 'veiculos' ? 'Frota de Tração' : 'Frota de Carga') : `Taxas: ${subAbaAtiva}`}
             </h2>
             
             <div className="flex items-center gap-2 w-full md:w-auto">
@@ -529,6 +633,7 @@ const Configuracoes = () => {
                 onClick={() => {
                   setEditandoItem(null);
                   setFormData(initialFormData);
+                  setSugestoesIssCidade([]);
                   setIsModalOpen(true);
                 }}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-blue-700 font-bold"
@@ -538,7 +643,7 @@ const Configuracoes = () => {
             </div>
           </div>
 
-          {(activeTab === 'icms' || activeTab === 'veiculos') && (
+          {(activeTab === 'icms' || activeTab === 'iss' || activeTab === 'veiculos') && (
             <div className="space-y-4">
               {activeTab === 'veiculos' && (
                 <div className="flex gap-4 mb-6 border-b pb-2">
@@ -551,17 +656,17 @@ const Configuracoes = () => {
                 {dadosFiltrados.map((item) => (
                   <div key={item.id} className="p-3 border rounded-lg bg-slate-50 flex flex-col gap-1 group hover:border-blue-300 transition-all shadow-sm">
                     <div className="flex justify-between items-center text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                      <span>{activeTab === 'icms' ? 'Alíquota' : 'Modelo'}</span>
+                      <span>{activeTab === 'icms' ? 'Rota UF' : activeTab === 'iss' ? 'Município' : 'Modelo'}</span>
                       <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button onClick={() => abrirEdicao(item)} className="text-blue-500 hover:text-blue-700 font-bold">Editar</button>
                         <button onClick={() => handleExcluir(item.id)} className="text-red-500"><Trash2 size={12} /></button>
                       </div>
                     </div>
                     <span className="font-bold text-slate-700 truncate uppercase">
-                      {activeTab === 'icms' ? `${item.origem}-${item.destino}` : (item.tipo_veiculo || item.tipo_semireboque)}
+                      {activeTab === 'icms' ? `${item.origem}-${item.destino}` : activeTab === 'iss' ? (item.cidade || '—') : (item.tipo_veiculo || item.tipo_semireboque)}
                     </span>
                     <span className="text-lg font-black text-blue-700">
-                      {activeTab === 'icms' ? `${item.aliquota}%` : `${item.eixos_veiculo || item.eixos_semireboque} Eixos`}
+                      {activeTab === 'icms' || activeTab === 'iss' ? `${item.aliquota}%` : `${item.eixos_veiculo || item.eixos_semireboque} Eixos`}
                     </span>
                   </div>
                 ))}
@@ -881,7 +986,7 @@ const Configuracoes = () => {
                           <table className="w-full text-left text-[11px] border-collapse">
                             <thead className="bg-slate-50 border-b border-slate-200">
                               <tr className="text-slate-600 font-black uppercase">
-                                <th className="px-4 py-3 border-r whitespace-nowrap">Faixa</th>
+                                <th className="px-4 py-3 border-r whitespace-nowrap">LAIR (%)</th>
                                 {markupClientes.map((cliente) => (
                                   <th key={cliente} className="px-4 py-3 border-r text-center whitespace-nowrap" colSpan={2}>
                                     {cliente}
@@ -896,75 +1001,98 @@ const Configuracoes = () => {
                                       Base (%)
                                     </th>
                                     <th className="px-2 py-2 border-r text-center whitespace-nowrap bg-amber-50/40">
-                                      Markup (%)
+                                      LAIR (%)
                                     </th>
                                   </Fragment>
                                 ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                              {markupFaixas.map((faixa) => (
-                                <tr key={faixa} className="hover:bg-blue-50/30 transition-colors">
+                              {markupC26Rows.map((c26) => (
+                                <tr key={c26} className="hover:bg-blue-50/30 transition-colors">
                                   <td className="px-4 py-3 font-black text-slate-700 border-r text-center">
-                                    {faixa}
+                                    {Number(c26).toFixed(2).replace('.', ',')}%
                                   </td>
                                   {markupClientes.map((cliente) => {
-                                    const item = markupMap.get(`${cliente}||${faixa}`);
+                                    const key = `${cliente.toUpperCase()}||${Number(c26).toFixed(2)}`;
+                                    const item = markupMap.get(key);
                                     const base = Number(item?.percentual_base);
                                     const mk = Number(item?.percentual_markup);
 
                                     return (
-                                      <td key={`${cliente}-${faixa}`} className="px-3 py-2 border-r text-center" colSpan={2}>
-                                        {item ? (
-                                          <div className="flex items-center justify-center gap-2 group">
+                                      <Fragment key={`${cliente}-${c26}`}>
+                                        <td className="px-3 py-2 border-r text-center bg-blue-50/10">
+                                          {item ? (
                                             <button
                                               onClick={() => abrirEdicao(item)}
-                                              className="flex-1 py-2 rounded-lg hover:bg-blue-100/60 transition-colors font-mono font-black text-blue-700"
+                                              className="w-full py-2 rounded-lg hover:bg-blue-100/60 transition-colors font-mono font-black text-blue-700"
                                               title="Editar"
                                             >
-                                              <div className="flex items-center justify-center gap-4">
-                                                <span className="px-2 py-1 rounded bg-blue-50/60 text-blue-700">
-                                                  {Number.isFinite(base) ? `${base.toFixed(2).replace('.', ',')}%` : '-'}
-                                                </span>
-                                                <span className="px-2 py-1 rounded bg-amber-50/60 text-amber-800">
-                                                  {Number.isFinite(mk) ? `${mk.toFixed(2).replace('.', ',')}%` : '-'}
-                                                </span>
-                                              </div>
+                                              {Number.isFinite(base) ? `${base.toFixed(4).replace('.', ',')}` : '-'}
                                             </button>
+                                          ) : (
                                             <button
-                                              onClick={() => handleExcluir(item.id)}
-                                              className="opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700"
-                                              title="Excluir"
+                                              onClick={() => {
+                                                setEditandoItem(null);
+                                                setFormData({
+                                                  ...initialFormData,
+                                                  markup_nome_cliente: cliente,
+                                                  markup_percentual_base: '',
+                                                  markup_percentual_markup: Number(c26).toFixed(2),
+                                                });
+                                                setIsModalOpen(true);
+                                              }}
+                                              className="w-full py-2 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 font-black"
+                                              title="Cadastrar"
                                             >
-                                              <Trash2 size={14} />
+                                              -
                                             </button>
-                                          </div>
-                                        ) : (
-                                          <button
-                                            onClick={() => {
-                                              setEditandoItem(null);
-                                              setFormData({
-                                                ...initialFormData,
-                                                markup_nome_cliente: cliente,
-                                                markup_faixa: faixa,
-                                                markup_percentual_base: '',
-                                                markup_percentual_markup: '',
-                                              });
-                                              setIsModalOpen(true);
-                                            }}
-                                            className="w-full py-2 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 font-black"
-                                            title="Cadastrar"
-                                          >
-                                            -
-                                          </button>
-                                        )}
-                                      </td>
+                                          )}
+                                        </td>
+                                        <td className="px-3 py-2 border-r text-center bg-amber-50/10">
+                                          {item ? (
+                                            <div className="flex items-center justify-center gap-2 group">
+                                              <button
+                                                onClick={() => abrirEdicao(item)}
+                                                className="flex-1 py-2 rounded-lg hover:bg-amber-100/60 transition-colors font-mono font-black text-amber-800"
+                                                title="Editar"
+                                              >
+                                                {Number.isFinite(mk) ? `${mk.toFixed(2).replace('.', ',')}%` : '-'}
+                                              </button>
+                                              <button
+                                                onClick={() => handleExcluir(item.id)}
+                                                className="opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700"
+                                                title="Excluir"
+                                              >
+                                                <Trash2 size={14} />
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <button
+                                              onClick={() => {
+                                                setEditandoItem(null);
+                                                setFormData({
+                                                  ...initialFormData,
+                                                  markup_nome_cliente: cliente,
+                                                  markup_percentual_base: '',
+                                                  markup_percentual_markup: Number(c26).toFixed(2),
+                                                });
+                                                setIsModalOpen(true);
+                                              }}
+                                              className="w-full py-2 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 font-black"
+                                              title="Cadastrar"
+                                            >
+                                              -
+                                            </button>
+                                          )}
+                                        </td>
+                                      </Fragment>
                                     );
                                   })}
                                 </tr>
                               ))}
 
-                              {markupFaixas.length === 0 && (
+                              {markupC26Rows.length === 0 && (
                                 <tr>
                                   <td className="px-4 py-6 text-center text-slate-400 font-bold" colSpan={1 + markupClientes.length * 2}>
                                     Nenhum markup cadastrado ainda. Clique em “Novo” para começar.
@@ -1012,7 +1140,16 @@ const Configuracoes = () => {
           <div className={`bg-white p-6 rounded-xl shadow-xl w-full ${subAbaAtiva === 'tabela' ? 'max-w-2xl' : 'max-w-md'} transition-all`}>
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <div className="w-2 h-6 bg-blue-600 rounded-full"></div>
-              {editandoItem ? 'Editar' : 'Novo'} {subAbaAtiva === 'tabela' ? 'Configuração de Cliente' : 'Registro'}
+              {editandoItem ? 'Editar' : 'Novo'}{' '}
+              {activeTab === 'taxas' && subAbaAtiva === 'tabela'
+                ? 'Configuração de Cliente'
+                : activeTab === 'icms'
+                  ? 'Alíquota ICMS'
+                  : activeTab === 'iss'
+                    ? 'Alíquota ISS'
+                    : activeTab === 'veiculos'
+                      ? (activeSubTab === 'veiculos' ? 'Veículo' : 'Semirreboque')
+                      : 'Registro'}
             </h3>
 
             <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-2 custom-scroll">
@@ -1029,6 +1166,53 @@ const Configuracoes = () => {
                     </div>
                   </div>
                   <input type="number" placeholder="Alíquota %" className="w-full border rounded p-2 outline-none focus:border-blue-500" value={formData.aliquota} onChange={e => setFormData({...formData, aliquota: e.target.value})} />
+                </>
+              ) : activeTab === 'iss' ? (
+                <>
+                  <div className="relative">
+                    <label className="text-[10px] font-bold uppercase text-slate-400">Município (IBGE)</label>
+                    <input
+                      className="w-full border rounded p-2 outline-none focus:border-blue-500 font-bold uppercase"
+                      placeholder="Digite 3+ letras e escolha na lista..."
+                      autoComplete="off"
+                      value={formData.iss_uf ? `${formData.cidade} - ${formData.iss_uf}` : formData.cidade}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setFormData((prev) => ({ ...prev, cidade: v, iss_uf: '' }));
+                        buscaIssCidades(v);
+                      }}
+                    />
+                    {sugestoesIssCidade.length > 0 && (
+                      <ul className="absolute z-[60] left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-slate-200 shadow-lg rounded-md text-xs">
+                        {sugestoesIssCidade.map((item, i) => (
+                          <li
+                            key={`${item.cidade}-${item.uf}-${i}`}
+                            className="px-3 py-2 hover:bg-blue-50 cursor-pointer border-b border-slate-100 last:border-0 text-left font-semibold text-slate-700"
+                            onMouseDown={(ev) => {
+                              ev.preventDefault();
+                              selecionarIssCidade(item);
+                            }}
+                          >
+                            {item.label}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="text-[9px] text-slate-400 mt-1">
+                      O nome salvo é o oficial do IBGE (mesmo fluxo da Nova Cotação).
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase text-slate-400">Alíquota (%)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="0,00"
+                      className="w-full border rounded p-2 outline-none focus:border-blue-500"
+                      value={formData.aliquota}
+                      onChange={e => setFormData({ ...formData, aliquota: e.target.value })}
+                    />
+                  </div>
                 </>
               ) : activeTab === 'veiculos' ? (
                 <>
@@ -1073,8 +1257,8 @@ const Configuracoes = () => {
                             <label className="text-[9px] font-bold text-slate-500 uppercase">Taxa 2 (%)</label>
                             {/* <input type="number" step="0.01" className="w-full border rounded p-2 text-sm" value={formData.seguro_taxa_2} onChange={e => setFormData({...formData, seguro_taxa_2: e.target.value})} /> */}
                             <div className="relative">
-                              <input type="text" className="w-full border rounded p-2 text-sm pr-8" placeholder="0,00" value={formData.seguro_taxa_1}
-                                onChange={e => {let v = e.target.value.replace(',', '.'); if (isNaN(v) && v !== '') return; setFormData({...formData, seguro_taxa_1: v}); }}/>
+                              <input type="text" className="w-full border rounded p-2 text-sm pr-8" placeholder="0,00" value={formData.seguro_taxa_2}
+                                onChange={e => {let v = e.target.value.replace(',', '.'); if (isNaN(v) && v !== '') return; setFormData({...formData, seguro_taxa_2: v}); }}/>
                               <span className="absolute right-3 top-2 text-slate-400 pointer-events-none">%</span>
                             </div>
                           </div>
@@ -1086,8 +1270,17 @@ const Configuracoes = () => {
                             type="text" 
                             className="w-full border rounded p-2 text-sm font-bold text-green-700 outline-none focus:border-blue-500" 
                             placeholder="R$ 0,00"
-                            // Exibe o valor formatado se houver valor, senão vazio
-                            value={formData.valor_mercadoria_limite ? formatarMoedaInput(formData.valor_mercadoria_limite.toString()) : ''} 
+                            value={
+                              formData.valor_mercadoria_limite === '' ||
+                              formData.valor_mercadoria_limite === null ||
+                              formData.valor_mercadoria_limite === undefined
+                                ? ''
+                                : formatarMoedaInput(
+                                    String(
+                                      Math.round(Number(formData.valor_mercadoria_limite) * 100)
+                                    )
+                                  )
+                            }
                             onChange={e => {
                               // Pega apenas os números para salvar no estado (ex: "150050" para R$ 1.500,50)
                               const apenasNumeros = e.target.value.replace(/\D/g, '');
@@ -1357,63 +1550,49 @@ const Configuracoes = () => {
                       onChange={e => setFormData({ ...formData, markup_nome_cliente: e.target.value.toUpperCase() })}
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Faixa</label>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase text-slate-400">LAIR (%)</label>
+                    <div className="relative">
                       <input
-                        type="number"
-                        className="w-full border rounded p-2 outline-none focus:border-blue-500 font-bold"
-                        placeholder="1"
-                        value={formData.markup_faixa}
-                        onChange={e => setFormData({ ...formData, markup_faixa: e.target.value })}
+                        type="text"
+                        className="w-full border rounded p-2 text-sm pr-8 outline-none focus:border-blue-500 font-bold"
+                        placeholder="20,00"
+                        value={(formData.markup_percentual_markup ?? '').toString().replace('.', ',')}
+                        onChange={e => {
+                          let v = e.target.value.replace(',', '.');
+                          if (v === '') {
+                            setFormData({ ...formData, markup_percentual_markup: '' });
+                            return;
+                          }
+                          if (/^\d*\.?\d*$/.test(v)) {
+                            setFormData({ ...formData, markup_percentual_markup: v });
+                          }
+                        }}
                       />
+                      <span className="absolute right-3 top-2 text-slate-400 pointer-events-none">%</span>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Base (%)</label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          className="w-full border rounded p-2 text-sm pr-8 outline-none focus:border-blue-500 font-bold"
-                          placeholder="0,00"
-                          value={(formData.markup_percentual_base ?? '').toString().replace('.', ',')}
-                          onChange={e => {
-                            let v = e.target.value.replace(',', '.');
-                            if (v === '') {
-                              setFormData({ ...formData, markup_percentual_base: '' });
-                              return;
-                            }
-                            if (/^\d*\.?\d*$/.test(v)) {
-                              setFormData({ ...formData, markup_percentual_base: v });
-                            }
-                          }}
-                        />
+                  <div>
+                    <label className="text-[10px] font-bold uppercase text-slate-400">Base (%)</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        className="w-full border rounded p-2 text-sm pr-8 outline-none focus:border-blue-500 font-bold"
+                        placeholder="1,2010"
+                        value={(formData.markup_percentual_base ?? '').toString().replace('.', ',')}
+                        onChange={e => {
+                          let v = e.target.value.replace(',', '.');
+                          if (v === '') {
+                            setFormData({ ...formData, markup_percentual_base: '' });
+                            return;
+                          }
+                          if (/^\d*\.?\d*$/.test(v)) {
+                            setFormData({ ...formData, markup_percentual_base: v });
+                          }
+                        }}
+                      />
                         <span className="absolute right-3 top-2 text-slate-400 pointer-events-none">%</span>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Markup (%)</label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          className="w-full border rounded p-2 text-sm pr-8 outline-none focus:border-blue-500 font-bold"
-                          placeholder="0,00"
-                          value={(formData.markup_percentual_markup ?? '').toString().replace('.', ',')}
-                          onChange={e => {
-                            let v = e.target.value.replace(',', '.');
-                            if (v === '') {
-                              setFormData({ ...formData, markup_percentual_markup: '' });
-                              return;
-                            }
-                            if (/^\d*\.?\d*$/.test(v)) {
-                              setFormData({ ...formData, markup_percentual_markup: v });
-                            }
-                          }}
-                        />
-                        <span className="absolute right-3 top-2 text-slate-400 pointer-events-none">%</span>
-                      </div>
                     </div>
                   </div>
                 </div>

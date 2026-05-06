@@ -1,23 +1,22 @@
-const BASE_URL = 'http://localhost:8000/api';
+import { getApiBase } from '../config/api';
+
+const base = () => getApiBase();
 
 export const apiService = {
-  // Busca Veículos (Viewset de Veículos)
   getVeiculos: async () => {
-    const response = await fetch(`${BASE_URL}/veiculos/`);
+    const response = await fetch(`${base()}/veiculos/`);
     if (!response.ok) throw new Error('Erro ao buscar veículos');
     return await response.json();
   },
 
-  // Busca Semireboques (Viewset de Semireboques)
   getSemireboques: async () => {
-    const response = await fetch(`${BASE_URL}/semireboques/`);
+    const response = await fetch(`${base()}/semireboques/`);
     if (!response.ok) throw new Error('Erro ao buscar semireboques');
     return await response.json();
   },
 
-  // Busca Clientes (Viewset de Clientes com filtro ?search=)
   getClientes: async (termo) => {
-    const response = await fetch(`${BASE_URL}/clientes/?search=${termo}`);
+    const response = await fetch(`${base()}/clientes/?search=${encodeURIComponent(termo)}`);
     if (!response.ok) throw new Error('Erro ao buscar clientes');
     return await response.json();
   }

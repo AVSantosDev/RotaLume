@@ -3,10 +3,11 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import viewsets
 # from configuracao import configuracao_serializer
-from .models import (IcmsEstado, Imposto, CustoSeguroCarga, CustoGris, CustoDespesaOperacional, RegistroMarkup, ClienteTaxasConfig, MarkupClienteFaixa)
-from .configuracao_serializer import (IcmsEstadoSerializer, ImpostoSerializer, CustoSeguroCargaSerializer, CustoGrisSerializer,
+from .models import (IcmsEstado, Imposto, MatrizISS, CustoSeguroCarga, CustoGris, CustoDespesaOperacional, RegistroMarkup, ClienteTaxasConfig, MarkupClienteFaixa)
+from .configuracao_serializer import (IcmsEstadoSerializer, ImpostoSerializer, MatrizISSSerializer, CustoSeguroCargaSerializer, CustoGrisSerializer,
     CustoDespesaOperacionalSerializer, RegistroMarkupSerializer, ClienteTaxasConfigSerializer, MarkupClienteFaixaSerializer)
 from django.db.models import Q
+from decimal import Decimal, InvalidOperation
 
 
 
@@ -49,9 +50,42 @@ class IcmsEstadoViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
 
 
+class MatrizISSViewSet(viewsets.ModelViewSet):
+    queryset = MatrizISS.objects.all().order_by('cidade')
+    serializer_class = MatrizISSSerializer
+
+    def create(self, request, *args, **kwargs):
+        cidade = (request.data.get('cidade') or '').strip()
+        if not cidade:
+            return Response(
+                {"error": "Informe o nome da cidade."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if MatrizISS.objects.filter(cidade__iexact=cidade).exists():
+            return Response(
+                {"error": f"A alíquota de ISS para a cidade «{cidade}» já está cadastrada."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        cidade = (request.data.get('cidade') or '').strip()
+        if not cidade:
+            return Response(
+                {"error": "Informe o nome da cidade."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        instance_id = kwargs.get('pk')
+        if MatrizISS.objects.filter(cidade__iexact=cidade).exclude(id=instance_id).exists():
+            return Response(
+                {"error": f"Não é possível alterar para «{cidade}» pois essa cidade já possui registro de ISS."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().update(request, *args, **kwargs)
+
 
 class ImpostoViewSet(viewsets.ModelViewSet):
-    queryset = Imposto.objects.all()
+    queryset = Imposto.objects.all().order_by("ordem", "nome")
     serializer_class = ImpostoSerializer
 
 class CustoSeguroCargaViewSet(viewsets.ModelViewSet):
