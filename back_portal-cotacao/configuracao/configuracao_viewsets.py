@@ -3,9 +3,22 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import viewsets
 # from configuracao import configuracao_serializer
-from .models import (IcmsEstado, Imposto, MatrizISS, CustoSeguroCarga, CustoGris, CustoDespesaOperacional, RegistroMarkup, ClienteTaxasConfig, MarkupClienteFaixa)
+from .models import (
+    IcmsEstado,
+    Imposto,
+    MatrizISS,
+    CustoSeguroCarga,
+    CustoGris,
+    CustoDespesaOperacional,
+    RegistroMarkup,
+    ClienteTaxasConfig,
+    MarkupClienteFaixa,
+    Cliente,
+    Solicitante,
+)
 from .configuracao_serializer import (IcmsEstadoSerializer, ImpostoSerializer, MatrizISSSerializer, CustoSeguroCargaSerializer, CustoGrisSerializer,
-    CustoDespesaOperacionalSerializer, RegistroMarkupSerializer, ClienteTaxasConfigSerializer, MarkupClienteFaixaSerializer)
+    CustoDespesaOperacionalSerializer, RegistroMarkupSerializer, ClienteTaxasConfigSerializer, MarkupClienteFaixaSerializer,
+    ClienteSerializer, SolicitanteSerializer)
 from django.db.models import Q
 from decimal import Decimal, InvalidOperation
 
@@ -114,5 +127,58 @@ class RegistroMarkupViewSet(viewsets.ModelViewSet):
 class ClienteTaxasConfigViewSet(viewsets.ModelViewSet):
     queryset = ClienteTaxasConfig.objects.all()
     serializer_class = ClienteTaxasConfigSerializer
+
+
+class ClienteViewSet(viewsets.ModelViewSet):
+    serializer_class = ClienteSerializer
+
+    def get_queryset(self):
+        qs = Cliente.objects.all()
+        termo = self.request.query_params.get("search")
+        if termo:
+            qs = qs.filter(Q(nome_empresa__icontains=termo) | Q(cnpj__icontains=termo))
+        return qs
+
+    def _norm_cnpj(self, v):
+        if v is None:
+            return ""
+        return "".join(ch for ch in str(v) if ch.isdigit())
+
+    def create(self, request, *args, **kwargs):
+        cnpj = self._norm_cnpj(request.data.get("cnpj"))
+        if cnpj and Cliente.objects.filter(cnpj=cnpj).exists():
+            return Response(
+                {"error": "Este cliente já possui cadastro."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # normaliza para salvar só dígitos
+        mutable = request.data.copy()
+        mutable["cnpj"] = cnpj
+        request._full_data = mutable  # DRF internal cache
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        instance_id = kwargs.get("pk")
+        cnpj = self._norm_cnpj(request.data.get("cnpj"))
+        if cnpj and Cliente.objects.filter(cnpj=cnpj).exclude(id=instance_id).exists():
+            return Response(
+                {"error": "Este cliente já possui cadastro."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        mutable = request.data.copy()
+        mutable["cnpj"] = cnpj
+        request._full_data = mutable
+        return super().update(request, *args, **kwargs)
+
+
+class SolicitanteViewSet(viewsets.ModelViewSet):
+    serializer_class = SolicitanteSerializer
+
+    def get_queryset(self):
+        qs = Solicitante.objects.all()
+        cliente_id = self.request.query_params.get("cliente")
+        if cliente_id:
+            qs = qs.filter(cliente_id=cliente_id)
+        return qs
 
 

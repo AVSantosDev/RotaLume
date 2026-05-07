@@ -46,3 +46,47 @@ export async function fetchJsonList(pathAndQuery) {
     return [];
   }
 }
+
+/**
+ * POST JSON; em erro HTTP lança Error com mensagem amigável.
+ * @param {string} pathAndQuery
+ * @param {object} body
+ */
+export async function fetchJsonPost(pathAndQuery, body) {
+  const base = getApiBase();
+  const path = pathAndQuery.startsWith('/') ? pathAndQuery : `/${pathAndQuery}`;
+  const url = `${base}${path}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  const text = await res.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { error: text.slice(0, 400) };
+    }
+  }
+  if (!res.ok) {
+    const serializerMsg =
+      data && typeof data === 'object' && !Array.isArray(data)
+        ? Object.entries(data)
+            .map(([k, v]) => {
+              if (typeof v === 'string') return `${k}: ${v}`;
+              if (Array.isArray(v)) return `${k}: ${v.join(' ')}`;
+              return `${k}: ${JSON.stringify(v)}`;
+            })
+            .join('\n')
+        : '';
+    const msg =
+      data.error ||
+      (Array.isArray(data.detail) ? data.detail.map((d) => d.msg || d).join(' ') : data.detail) ||
+      serializerMsg ||
+      `HTTP ${res.status}`;
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  }
+  return data;
+}

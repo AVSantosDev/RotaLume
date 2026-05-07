@@ -14,8 +14,9 @@ RUN apt-get update && apt-get install -y \
 # Define a pasta de trabalho dentro do container
 WORKDIR /app
 
-# Instala as dependências do Python
-COPY requirements.txt .
+# Instala as dependências do Python (normaliza UTF-16/UTF-8 com BOM vindos do Windows)
+COPY docker_normalize_requirements.py requirements.txt ./
+RUN python3 docker_normalize_requirements.py && rm docker_normalize_requirements.py
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia o resto do código do projeto

@@ -40,6 +40,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'novacotacao',
     'configuracao',
+    'configsistema',
+    'cotacoes',
     'corsheaders',
 ]
 

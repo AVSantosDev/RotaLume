@@ -12,6 +12,8 @@
   "dependencies": {
     "@react-icons/all-files": "^4.1.0",
     "@tailwindcss/vite": "^4.2.2",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "lucide-react": "^1.8.0",
     "prop-types": "^15.8.1",
     "react": "^18.3.1",

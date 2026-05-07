@@ -18,6 +18,45 @@ class IcmsEstado(models.Model):
         return f"{self.origem} -> {self.destino}: {self.aliquota}%"
 
 
+class Cliente(models.Model):
+    """
+    Base de clientes (dados cadastrais) usada na Nova Cotação e Configurações.
+
+    Observação: tabelas já existem originalmente em `novacotacao`; aqui mantemos a arquitetura
+    centralizando a base em `configuracao` sem mexer no schema (db_table fixo).
+    """
+    id = models.BigAutoField(primary_key=True)
+    nome_empresa = models.CharField(max_length=255)
+    cnpj = models.CharField(max_length=14)
+    endereco = models.CharField(max_length=255)
+    cep = models.CharField(max_length=8)
+    numero = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        db_table = "novacotacao_cliente"
+        managed = False
+        ordering = ["nome_empresa"]
+
+    def __str__(self):
+        return self.nome_empresa
+
+
+class Solicitante(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE, related_name="solicitantes")
+    nome = models.CharField(max_length=255)
+    email = models.EmailField()
+    telefone = models.CharField()
+
+    class Meta:
+        db_table = "novacotacao_solicitante"
+        managed = False
+        ordering = ["nome"]
+
+    def __str__(self):
+        return f"{self.nome} ({self.cliente.nome_empresa})"
+
+
 
 
 class Imposto(models.Model):

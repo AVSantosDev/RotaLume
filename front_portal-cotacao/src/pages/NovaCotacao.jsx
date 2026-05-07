@@ -1,12 +1,141 @@
-import { useState, useEffect, useRef } from 'react';
-import { Save, RotateCcw, FileText, Percent } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { Save, RotateCcw, FileText, Percent, ChevronDown } from 'lucide-react';
 import { DIVERSOS_LAIR_DIVISORES_PADRAO } from '../lib/markupSpotLookup';
-import { fetchJsonList, getApiBase } from '../config/api';
+import { fetchJsonList, fetchJsonPost, getApiBase } from '../config/api';
 import { buscarMunicipiosPorTermo } from '../lib/cidadesIbge';
+import { useSearchParams } from 'react-router-dom';
+import { gerarPropostaTecnicaPdf } from '../lib/propostaPdf';
+
+const ANTT_LOAD_TYPES = [
+  { value: 'granel_solido', label: 'Granel sólido' },
+  { value: 'granel_liquido', label: 'Granel líquido' },
+  { value: 'frigorificada', label: 'Frigorificada' },
+  { value: 'conteineirizada', label: 'Conteinerizada' },
+  { value: 'geral', label: 'Geral' },
+  { value: 'neogranel', label: 'Neogranel' },
+  { value: 'perigosa_granel_solido', label: 'Perigosa granel sólido' },
+  { value: 'perigosa_granel_liquido', label: 'Perigosa granel líquido' },
+  { value: 'perigosa_frigorificada', label: 'Perigosa frigorificada' },
+  { value: 'perigosa_conteineirizada', label: 'Perigosa conteinerizada' },
+  { value: 'perigosa_geral', label: 'Perigosa geral' },
+  { value: 'granel_pressurizada', label: 'Granel pressurizada' },
+];
+
+/** Converte texto da distância QualP (ex.: "403" ou "403,5") em km. */
+function parseKmQualp(str) {
+  if (str == null || str === '') return null;
+  let s = String(str).trim();
+  if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.');
+  else if (s.includes(',')) s = s.replace(',', '.');
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Tarifa R$/km (ou valor da faixa) do cadastro de veículo conforme distância total. */
+function tarifaFaixaPorKm(km, v) {
+  if (!v || km == null) return null;
+  const k = Number(km);
+  const pick = (field) => {
+    const x = v[field];
+    if (x === undefined || x === null || x === '') return 0;
+    const n = typeof x === 'number' ? x : parseFloat(String(x).replace(',', '.'));
+    return Number.isFinite(n) ? n : 0;
+  };
+  if (k <= 50) return pick('tarifa_0_50');
+  if (k <= 100) return pick('tarifa_51_100');
+  if (k <= 150) return pick('tarifa_101_150');
+  if (k <= 200) return pick('tarifa_151_200');
+  if (k <= 300) return pick('tarifa_201_300');
+  if (k <= 400) return pick('tarifa_301_400');
+  if (k <= 500) return pick('tarifa_401_500');
+  return pick('tarifa_acima_500');
+}
+
+function calcCtrbPorKmEVeiculo(km, v) {
+  const rate = tarifaFaixaPorKm(km, v);
+  if (rate == null || km == null) return null;
+  const k = Number(km);
+  let total = k * rate;
+  if (k <= 50 && v?.frete_minimo_ate_50km != null && v.frete_minimo_ate_50km !== '') {
+    const piso = typeof v.frete_minimo_ate_50km === 'number'
+      ? v.frete_minimo_ate_50km
+      : parseFloat(String(v.frete_minimo_ate_50km).replace(',', '.'));
+    if (Number.isFinite(piso) && piso > 0) total = Math.max(total, piso);
+  }
+  return total;
+}
+
+function buildQualpPayloadFromForm(f, eixos) {
+  const payload = {
+    origem: String(f.origem ?? '').trim(),
+    uf_origem: String(f.uf_origem ?? '').trim(),
+    destino: String(f.destino ?? '').trim(),
+    uf_destino: String(f.uf_destino ?? '').trim(),
+    axis: eixos,
+    freight_type: f.anttFreightType || 'A',
+    load_type: f.anttLoadType || 'geral',
+    is_empty_return: !!f.anttEmptyReturn,
+  };
+  if ((f.anttRetroactiveDate || '').trim()) {
+    payload.retroactive_date = String(f.anttRetroactiveDate).trim();
+  }
+  return payload;
+}
+
+/** Compara cidade origem × cadastro Matriz ISS (maiúsculas, collapse espaços). */
+function cidadeIssMatch(origemNome, cidadeCadastro) {
+  const a = String(origemNome || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const b = String(cidadeCadastro || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+function mergeQualpApiIntoForm(data) {
+  const fmtMoedaInput = (v) =>
+    typeof v === 'number' && Number.isFinite(v)
+      ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+      : '';
+  const pedOk = typeof data.pedagio_total === 'number' && Number.isFinite(data.pedagio_total);
+  return (prev) => ({
+    ...prev,
+    qualpKm: data.distancia_km != null ? String(data.distancia_km).replace('.', ',') : '',
+    qualpFreteMinimoValor: data.frete_antt_minimo ?? null,
+    qualpFreteMinimoVisual: fmtMoedaInput(data.frete_antt_minimo),
+    ...(pedOk
+      ? {
+          pedagioCusto: data.pedagio_total,
+          pedagioCustoVisual: fmtMoedaInput(data.pedagio_total),
+        }
+      : {}),
+  });
+}
+
+function toDec(v, dp = 2) {
+  const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/\./g, '').replace(',', '.'));
+  if (!Number.isFinite(n)) return 0;
+  const p = 10 ** dp;
+  return Math.round(n * p) / p;
+}
 
 const NovaCotacao = () => {
+  const [searchParams] = useSearchParams();
+  const viewId = searchParams.get('view');
+  const cloneId = searchParams.get('clone');
+  const isReadOnly = !!viewId && !cloneId;
+
   const inputRef = useRef(null);
   const ultimoMarkupSalvoRef = useRef('');
+  const qualpAutoFetchSeqRef = useRef(0);
 
   // --- ESTADOS PARA DADOS DO DJANGO ---
   const [veiculosDoBanco, setVeiculosDoBanco] = useState([]);
@@ -23,6 +152,7 @@ const NovaCotacao = () => {
   const [listaGris, setListaGris] = useState([]);
   const [listaDespesas, setListaDespesas] = useState([]);
   const [listaMarkupConfig, setListaMarkupConfig] = useState([]);
+  const [listaMatrizIss, setListaMatrizIss] = useState([]);
 
   const clienteTaxasSelecionado = useRef(null);
 
@@ -30,10 +160,20 @@ const NovaCotacao = () => {
   const [sugestaoOrigem, setSugestaoOrigem] = useState([]);
   const [sugestaoDestino, setSugestaoDestino] = useState([]);
   const [carregando, setCarregando] = useState(false);
+  const [qualpBuscando, setQualpBuscando] = useState(false);
+  const [qualpErro, setQualpErro] = useState('');
+  const [qualpEixosFallback, setQualpEixosFallback] = useState(5);
+  /** DRE — Base lucro: recolhida por padrão; cabeçalho expande/recolhe. */
+  const [dreLucroExpanded, setDreLucroExpanded] = useState(false);
+  const [cotacaoSalvando, setCotacaoSalvando] = useState(false);
+  const [cotacaoSalvarErro, setCotacaoSalvarErro] = useState('');
+  const [cotacaoSalvaOk, setCotacaoSalvaOk] = useState('');
+  const [cotacaoCarregando, setCotacaoCarregando] = useState(false);
+  const [cotacaoNumero, setCotacaoNumero] = useState(null);
 
   // --- ESTADO DO FORMULÁRIO ---
   const [form, setForm] = useState({
-    cliente: '', cliente_id: '', endereco: '', cep: '', fone: '', contato: '', email: '',
+    cliente: '', cliente_id: '', cliente_cnpj: '', endereco: '', cep: '', fone: '', contato: '', email: '',
     origem: '', uf_origem: '', destino: '', uf_destino: '', observacao: '',
     contratacao: 'SPOT',
     tabelaCliente: '',
@@ -49,7 +189,15 @@ const NovaCotacao = () => {
     aliquotaIcms: null,
     aliquotaIcmsBruta: null,
     /** ALIQ.AREDEN: com origem em SP/PR/MG/SC/BA = bruta × 80% (planilha). */
-    aliquotaIcmsReduzida: null
+    aliquotaIcmsReduzida: null,
+    /** QualP / tabela ANTT (referência + pedágio CTRB preenchido pela consulta) */
+    anttFreightType: 'A',
+    anttLoadType: 'geral',
+    anttEmptyReturn: false,
+    anttRetroactiveDate: '',
+    qualpKm: '',
+    qualpFreteMinimoValor: null,
+    qualpFreteMinimoVisual: '',
   });
 
   const [calculos, setCalculos] = useState({
@@ -61,20 +209,114 @@ const NovaCotacao = () => {
     dre: null
   });
 
+  // --- CARREGAR COTAÇÃO PARA VISUALIZAR / CLONAR ---
+  useEffect(() => {
+    const id = viewId || cloneId;
+    if (!id) return;
+
+    const carregarCotacao = async () => {
+      setCotacaoCarregando(true);
+      setCotacaoSalvarErro('');
+      setCotacaoSalvaOk('');
+      try {
+        const base = getApiBase();
+        const res = await fetch(`${base}/cotacoes/${encodeURIComponent(id)}/`);
+        const text = await res.text();
+        let data = {};
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          data = { error: text.slice(0, 400) };
+        }
+        if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+        if (viewId) setCotacaoNumero(data?.id ?? Number(viewId) ?? null);
+        if (cloneId) setCotacaoNumero(null);
+
+        setForm((f) => ({
+          ...f,
+          cliente_id: data.cliente_id ?? '',
+          cliente: data.cliente_nome ?? '',
+          cliente_cnpj: data.cliente_cnpj ?? '',
+          contato: data.solicitante_nome ?? '',
+          email: data.solicitante_email ?? '',
+          fone: data.solicitante_telefone ?? '',
+          origem: data.origem ?? '',
+          uf_origem: data.uf_origem ?? '',
+          destino: data.destino ?? '',
+          uf_destino: data.uf_destino ?? '',
+          observacao: data.observacao ?? '',
+          contratacao: data.contratacao ?? data.tipo ?? 'SPOT',
+          tabelaCliente: data.tabela_cliente ?? f.tabelaCliente,
+          tipoVeiculo: data.tipo_veiculo ?? '',
+          tipoSemireboque: data.tipo_semireboque ?? '',
+          ctrbOrcado: Number(data.ctrb_orcado ?? 0) || 0,
+          pedagioCusto: Number(data.pedagio_utilizado ?? 0) || 0,
+          valorMercadoria: Number(data.valor_mercadoria ?? 0) || 0,
+          qtdAjudante: Number(data.qtd_ajudante ?? 0) || 0,
+          taxaAdicionalEntrega: Number(data.taxa_adicional_entrega ?? 0) || 0,
+          percentualLairDesejada: Number(data.lair_desejada ?? f.percentualLairDesejada ?? 20) || 20,
+          percentualDescontoSeguro: Number(data.ajuste_comercial_pct ?? 0) || 0,
+          spotK11Pct: Number(data.spot_k11_pct ?? 0) || 0,
+          aliquotaIcmsBruta: data.aliquota_bruta ?? f.aliquotaIcmsBruta,
+          aliquotaIcmsReduzida: data.aliquota_reduzida ?? f.aliquotaIcmsReduzida,
+          anttFreightType: data.antt_freight_type ?? 'A',
+          anttLoadType: data.antt_load_type ?? 'geral',
+          anttEmptyReturn: !!data.antt_empty_return,
+          anttRetroactiveDate: data.antt_retroactive_date ?? '',
+          qualpKm: data.distancia_km != null ? String(data.distancia_km).replace('.', ',') : '',
+          qualpFreteMinimoValor: data.frete_minimo_antt ?? null,
+          qualpFreteMinimoVisual: data.frete_minimo_antt != null ? String(data.frete_minimo_antt) : '',
+        }));
+
+        setCalculos((c) => ({
+          ...c,
+          sIcms: {
+            ...c.sIcms,
+            fretePeso: Number(data.frete_peso_sicms ?? 0) || 0,
+            seguro: Number(data.seguro_sicms ?? 0) || 0,
+            gris: Number(data.gris_sicms ?? 0) || 0,
+            pedagio: Number(data.pedagio_sicms ?? 0) || 0,
+            carga: 0,
+            adicional: Number(data.outros_sicms ?? 0) || 0,
+            total: Number(data.frete_all_in_sicms ?? 0) || 0,
+          },
+          cIcms: {
+            ...c.cIcms,
+            fretePeso: Number(data.frete_peso_cicms ?? 0) || 0,
+            seguro: Number(data.seguro_cicms ?? 0) || 0,
+            gris: Number(data.gris_cicms ?? 0) || 0,
+            pedagio: Number(data.pedagio_cicms ?? 0) || 0,
+            carga: 0,
+            adicional: Number(data.outros_cicms ?? 0) || 0,
+            total: Number(data.frete_all_in_cicms ?? 0) || 0,
+          },
+        }));
+      } catch (e) {
+        setCotacaoSalvarErro(e.message || String(e));
+      } finally {
+        setCotacaoCarregando(false);
+      }
+    };
+
+    carregarCotacao();
+  }, [viewId, cloneId]);
+
   // --- 1. CARREGAMENTO INICIAL (VEÍCULOS E REBOQUES) ---
   useEffect(() => {
     const carregarListas = async () => {
       try {
-        const [dataV, dataS, dataCT, dataImp, dataSeg, dataGris, dataDesp, dataMk] = await Promise.all([
-          fetchJsonList('/veiculos/'),
-          fetchJsonList('/semireboques/'),
-          fetchJsonList('/cliente-taxas-config/'),
-          fetchJsonList('/impostos/'),
-          fetchJsonList('/seguros/'),
-          fetchJsonList('/gris/'),
-          fetchJsonList('/despesas-operacionais/'),
-          fetchJsonList('/markup-config/')
-        ]);
+        const [dataV, dataS, dataCT, dataImp, dataSeg, dataGris, dataDesp, dataMk, dataIss] =
+          await Promise.all([
+            fetchJsonList('/veiculos/'),
+            fetchJsonList('/semireboques/'),
+            fetchJsonList('/cliente-taxas-config/'),
+            fetchJsonList('/impostos/'),
+            fetchJsonList('/seguros/'),
+            fetchJsonList('/gris/'),
+            fetchJsonList('/despesas-operacionais/'),
+            fetchJsonList('/markup-config/'),
+            fetchJsonList('/matriz-iss/'),
+          ]);
 
         setVeiculosDoBanco(dataV);
         setReboquesDoBanco(dataS);
@@ -84,6 +326,7 @@ const NovaCotacao = () => {
         setListaGris(dataGris);
         setListaDespesas(dataDesp);
         setListaMarkupConfig(dataMk);
+        setListaMatrizIss(Array.isArray(dataIss) ? dataIss : []);
 
         if (dataCT.length > 0) {
           setForm(f => ({ ...f, tabelaCliente: dataCT[0].nome_cliente }));
@@ -94,6 +337,28 @@ const NovaCotacao = () => {
       }
     };
     carregarListas();
+  }, []);
+
+  /** Padrões QualP (Configuração sistema). */
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/qualp-config/`);
+        const c = await res.json();
+        if (!res.ok) return;
+        if (typeof c.eixos_padrao === 'number' && Number.isFinite(c.eixos_padrao)) {
+          setQualpEixosFallback(c.eixos_padrao);
+        }
+        setForm((f) => ({
+          ...f,
+          anttLoadType: c.tipo_carga_padrao || f.anttLoadType,
+          anttFreightType: c.tipo_tabela_frete_padrao || f.anttFreightType,
+          anttEmptyReturn: c.retorno_vazio_padrao ?? f.anttEmptyReturn,
+        }));
+      } catch {
+        /* ignorar se API off-line */
+      }
+    })();
   }, []);
 
 
@@ -112,6 +377,7 @@ const NovaCotacao = () => {
       ...form,
       cliente: c.nome_empresa,
       cliente_id: c.id,
+      cliente_cnpj: c.cnpj || '',
       endereco: c.endereco || '',
       cep: c.cep || '',
       fone: c.telefone || '',
@@ -473,13 +739,34 @@ const NovaCotacao = () => {
     // Excel: I17 / U$X (U é percentual operacional em fração)
     const fretePesoSIcms = ctrb === 0 ? 0 : pctOperFrac > 0 ? ctrb / pctOperFrac : 0;
 
-    const sIcms = {
+    const sIcmsBase = {
       fretePeso: fretePesoSIcms,
       seguro: seguroSIcms,
       gris: grisSIcms,
       pedagio: pedagioSIcms,
       carga: cargaSIcms,
       adicional: adicionalSIcms,
+      total: 0
+    };
+    sIcmsBase.total =
+      sIcmsBase.fretePeso +
+      sIcmsBase.seguro +
+      sIcmsBase.gris +
+      sIcmsBase.pedagio +
+      sIcmsBase.carga +
+      sIcmsBase.adicional;
+
+    const f28 = normalizarNumero(form.percentualDescontoSeguro) / 100;
+    const fatorDesc = Math.max(0, 1 - f28);
+
+    /** Ajuste comercial: desconto em frete peso, seguro e GRIS (impacta S/ICMS, C/ICMS e proposta). */
+    const sIcms = {
+      fretePeso: sIcmsBase.fretePeso * fatorDesc,
+      seguro: sIcmsBase.seguro * fatorDesc,
+      gris: sIcmsBase.gris * fatorDesc,
+      pedagio: sIcmsBase.pedagio,
+      carga: sIcmsBase.carga,
+      adicional: sIcmsBase.adicional,
       total: 0
     };
     sIcms.total = sIcms.fretePeso + sIcms.seguro + sIcms.gris + sIcms.pedagio + sIcms.carga + sIcms.adicional;
@@ -495,77 +782,83 @@ const NovaCotacao = () => {
     };
     cIcms.total = cIcms.fretePeso + cIcms.seguro + cIcms.gris + cIcms.pedagio + cIcms.carga + cIcms.adicional;
 
-    const f28 = normalizarNumero(form.percentualDescontoSeguro) / 100;
-    /** Desconto só em frete peso, seguro e GRIS (texto vermelho da planilha). */
-    const descSeguro = {
-      fretePeso: sIcms.fretePeso - sIcms.fretePeso * f28,
-      seguro: sIcms.seguro - sIcms.seguro * f28,
-      gris: sIcms.gris - sIcms.gris * f28,
-      pedagio: sIcms.pedagio,
-      carga: sIcms.carga,
-      adicional: sIcms.adicional,
-      total: 0
-    };
-    descSeguro.total =
-      descSeguro.fretePeso +
-      descSeguro.seguro +
-      descSeguro.gris +
-      descSeguro.pedagio +
-      descSeguro.carga +
-      descSeguro.adicional;
+    /** Coluna proposta (3): igual S/ICMS já ajustado. */
+    const descSeguro = { ...sIcms };
 
-    /** --- DRE BASE LUCRO (planilha): ROB=G17+G18+G19; LAIR% = O26/O20 --- */
+    /** --- DRE BASE LUCRO (regras novas / espelho do Excel) --- */
+    const rob = cIcms.fretePeso + cIcms.seguro + cIcms.gris;
+
+    const pis = impostosMap.get('PIS') || 0;
+    const cofins = impostosMap.get('COFINS') || 0;
+    const pisCofinsPct = pis > 0 || cofins > 0 ? pis + cofins : impostosMap.get('PIS/COFINS') || 0;
+    const cprbPct = impostosMap.get('CPRB') || 0;
+
+    const despPctByNome = (nomeExato) => {
+      const alvo = String(nomeExato || '').toUpperCase().trim();
+      for (const d of listaDespesas || []) {
+        if ((d?.unidade || '').toUpperCase() !== 'PERCENTUAL') continue;
+        const nm = String(d?.nome || '').toUpperCase().trim();
+        if (nm === alvo) return normalizarNumero(d.valor);
+      }
+      return 0;
+    };
+    const cgoPct = despPctByNome('CGO'); // % sobre ROL
+    const despAdmPct = despPctByNome('DESP.ADM'); // %
+    const financeiroPct = despPctByNome('FINANCEIRO'); // %
+
+    // ICMS do Frete All In (referência do card ICMS/ISS)
+    const origemUfDre = (form.uf_origem || '').toUpperCase().trim();
+    const baseIcmsAllIn =
+      origemUfDre === 'PR'
+        ? Math.max(0, (Number(cIcms.total) || 0) - (Number(cIcms.pedagio) || 0))
+        : Math.max(0, Number(sIcms.total) || 0);
+    const aliqBrutaPct = brutaPct > 0 ? brutaPct : 0;
+    const icmsAllInValor = aliqBrutaPct > 0 ? baseIcmsAllIn * (aliqBrutaPct / 100) : 0;
+
+    // (-) ICMS/ISS (DRE): ROB × alíquota reduzida (fica negativo e em vermelho)
     const reduzidaDrePct =
       form.aliquotaIcmsReduzida != null && form.aliquotaIcmsReduzida !== ''
         ? normalizarNumero(form.aliquotaIcmsReduzida)
-        : reduzidaParaK > 0
-          ? reduzidaParaK
-          : k11Pct;
-    const Kdec = reduzidaDrePct / 100;
-    const Ldec = brutaPct > 0 ? brutaPct / 100 : L11;
+        : 0;
+    const icmsIss = -(rob * (reduzidaDrePct / 100));
 
-    const rob = cIcms.fretePeso + cIcms.seguro + cIcms.gris;
-    const pisSep = impostosMap.get('PIS') || 0;
-    const cofSep = impostosMap.get('COFINS') || 0;
-    const pisCofUm = impostosMap.get('PIS/COFINS') || 0;
-    const b5b6Pct = pisSep > 0 || cofSep > 0 ? pisSep + cofSep : pisCofUm;
-    const b5b6 = b5b6Pct / 100;
-    const d5 = (impostosMap.get('CPRB') || 0) / 100;
-    const creditoPct = (impostosMap.get('CREDITO') || impostosMap.get('CREDITO PIS') || 6.9375) / 100;
+    // (-) IMP.FED = ((ROB - ICMS_AllIn) * (PIS+COFINS) + (ROB * CPRB)) * -1
+    const impFed =
+      -(
+        (rob - icmsAllInValor) * (pisCofinsPct / 100) +
+        rob * (cprbPct / 100)
+      );
 
-    const somaDespPerc = (pred) => {
-      let s = 0;
-      for (const d of listaDespesas || []) {
-        if ((d?.unidade || '').toUpperCase() !== 'PERCENTUAL') continue;
-        const nm = (d?.nome || '').toUpperCase();
-        if (pred(nm)) s += normalizarNumero(d.valor) / 100;
-      }
-      return s;
-    };
-    const n5cgo = somaDespPerc((nm) => nm.includes('CGO') || nm.includes('EGD')) || 0.056;
-    let n67fin = somaDespPerc((nm) => nm.includes('FINANCEIRO') || nm.includes('FINAN') || nm.includes('PAMCARD'));
-    /** Planilha ~11% sobre ROL; se o cadastro somar pouco, mantém o consolidado típico. */
-    if (n67fin < 0.08) n67fin = 0.11;
+    // % (+) CREDITO = (PIS+COFINS) * 75%
+    const creditoPct = pisCofinsPct * 0.75;
+    const credito = ctrb * (creditoPct / 100);
+
+    // ROL = ROB + (-ICMS/ISS) + (-IMP.FED) + (+) CREDITO
+    // (ICMS/ISS e IMP.FED já estão negativos)
+    const rol = rob + icmsIss + impFed + credito;
+
+    // C.V = CTRB * -1
+    const cv = -ctrb;
+    // C.F = (ROL * CGO) * -1
+    const cf = -(rol * (cgoPct / 100));
+    // CSP = C.V + C.F
+    const csp = cv + cf;
+
+    // L.O = ROL + CSP  (CSP já é negativo)
+    const lo = rol + csp;
+
+    // % DESP./FIN. = (DESP.ADM + FINANCEIRO) * -1
+    const despFinPct = -((despAdmPct + financeiroPct) / 100);
+    const despFin = rol * despFinPct; // já negativo
+
+    // LAIR = L.O - DESP./FIN.  (despFin já vem negativo)
+    const lairValor = lo + despFin;
+    const lairPct = rol !== 0 ? (lairValor / rol) * 100 : 0;
 
     let dre = null;
     let lairPctStr = '0.00';
-    if (rob > 0 && ctrb > 0 && brutaPct > 0) {
-      const H25 = rob * Kdec;
-      const icmsIss = -(
-        Math.abs(reduzidaDrePct - brutaPct) < 0.015 ? rob * Ldec : rob * Kdec
-      );
-      /** (-) IMP.FED = ((O16-H25)*(B5+B6)+(O16*D5))*-1 — use PIS/COFINS (e linhas PIS+COFINS separadas) em B5+B6 e CPRB em D5. */
-      const impFed = -((rob - H25) * b5b6 + rob * d5);
-      const credito = ctrb * creditoPct;
-      const rol = rob + impFed + icmsIss + credito;
-      const cv = -ctrb;
-      const cf = -(rol * n5cgo);
-      const csp = cv + cf;
-      const lo = rol + csp;
-      const despFin = -(rol * n67fin);
-      const lairValor = lo + despFin;
-      const lairPct = rol > 0 ? (lairValor / rol) * 100 : 0;
-      lairPctStr = lairPct.toFixed(2);
+    if (rob > 0 && ctrb > 0) {
+      lairPctStr = Number.isFinite(lairPct) ? lairPct.toFixed(2) : '0.00';
       dre = {
         rob,
         icmsIss,
@@ -578,7 +871,11 @@ const NovaCotacao = () => {
         lo,
         despFin,
         lairValor,
-        lairPct
+        lairPct,
+        // extras p/ exibir percentuais “não relativos”
+        creditoPct,
+        despFinPct: despFinPct * 100,
+        reduzidaDrePct,
       };
     }
 
@@ -586,6 +883,304 @@ const NovaCotacao = () => {
 
     setCalculos({ sIcms, cIcms, descSeguro, lairReal: lairPctStr, dre });
   }, [form, listaImpostos, listaMarkupConfig, listaDespesas]);
+
+  /** Eixos QualP = `eixos_veiculo` do cadastro Veiculo (novacotacao.Veiculo); senão padrão da config. sistema */
+  const eixosConsultaQualp = useMemo(() => {
+    const clamp = (n) => {
+      const x = Math.round(Number(n));
+      const fb = qualpEixosFallback;
+      if (!Number.isFinite(x)) return Math.min(9, Math.max(2, fb));
+      return Math.min(9, Math.max(2, x));
+    };
+    const tv = String(form.tipoVeiculo || '').trim();
+    const vRow = veiculosDoBanco.find((x) => String(x.tipo_veiculo || '').trim() === tv);
+    if (vRow != null && Number(vRow.eixos_veiculo) >= 2) {
+      return clamp(vRow.eixos_veiculo);
+    }
+    return clamp(qualpEixosFallback);
+  }, [form.tipoVeiculo, veiculosDoBanco, qualpEixosFallback]);
+
+  /**
+   * Ao selecionar o tipo de veículo, consulta a QualP (km, frete mín. ANTT, pedágio) se a rota já estiver preenchida.
+   * Só reage a `tipoVeiculo` para não disparar a API a cada tecla em origem/destino; use o botão "Buscar" nesses casos.
+   */
+  useEffect(() => {
+    const tv = String(form.tipoVeiculo || '').trim();
+    if (!tv) return;
+    if (!(form.origem || '').trim() || !(form.uf_origem || '').trim()) return;
+    if (!(form.destino || '').trim() || !(form.uf_destino || '').trim()) return;
+
+    const seq = ++qualpAutoFetchSeqRef.current;
+    setQualpErro('');
+    setQualpBuscando(true);
+    const payload = buildQualpPayloadFromForm(form, eixosConsultaQualp);
+
+    (async () => {
+      try {
+        const data = await fetchJsonPost('/qualp/consulta/', payload);
+        if (seq !== qualpAutoFetchSeqRef.current) return;
+        setForm(mergeQualpApiIntoForm(data));
+      } catch (e) {
+        if (seq !== qualpAutoFetchSeqRef.current) return;
+        setQualpErro(e.message || String(e));
+      } finally {
+        if (seq === qualpAutoFetchSeqRef.current) setQualpBuscando(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- disparo intencional só na troca de veículo
+  }, [form.tipoVeiculo]);
+
+  /** CTRB orçado = distância rota × tarifa da faixa (cadastro do veículo selecionado). */
+  useEffect(() => {
+    const km = parseKmQualp(form.qualpKm);
+    const tv = String(form.tipoVeiculo || '').trim();
+    const v = veiculosDoBanco.find((x) => String(x.tipo_veiculo || '').trim() === tv);
+    if (km == null || !v) return;
+    const ctrb = calcCtrbPorKmEVeiculo(km, v);
+    if (ctrb == null || !Number.isFinite(ctrb)) return;
+    const visual = ctrb.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    setForm((prev) => {
+      if (prev.ctrbOrcado === ctrb && prev.ctrbOrcadoVisual === visual) return prev;
+      return { ...prev, ctrbOrcado: ctrb, ctrbOrcadoVisual: visual };
+    });
+  }, [form.qualpKm, form.tipoVeiculo, veiculosDoBanco]);
+
+  const ctrbCardAlerta = useMemo(() => {
+    const ctrb = Number(form.ctrbOrcado);
+    const minimo = form.qualpFreteMinimoValor;
+    if (minimo == null || minimo === '' || !Number.isFinite(Number(minimo))) return 'neutral';
+    const c = Number.isFinite(ctrb) ? ctrb : 0;
+    const m = Number(minimo);
+    if (!Number.isFinite(m)) return 'neutral';
+    if (c < m) return 'below';
+    return 'above';
+  }, [form.ctrbOrcado, form.qualpFreteMinimoValor]);
+
+  const ctrbTarifaUsada = useMemo(() => {
+    const km = parseKmQualp(form.qualpKm);
+    if (km == null) return null;
+    const v = (veiculosDoBanco || []).find((x) => String(x?.tipo_veiculo || '') === String(form.tipoVeiculo || ''));
+    if (!v) return null;
+    const rate = tarifaFaixaPorKm(km, v);
+    return rate == null || !Number.isFinite(Number(rate)) ? null : Number(rate);
+  }, [form.qualpKm, form.tipoVeiculo, veiculosDoBanco]);
+
+  /**
+   * Base tributável (ICMS): PR → (Frete All In C/ICMS − pedágio C/ICMS); demais UF → Frete All In col. proposta (3).
+   * ICMS = base × alíquota bruta. ISS = mesma base × alíquota da cidade (Matriz ISS), se houver cadastro.
+   */
+  const icmsIssOrcamento = useMemo(() => {
+    const pctNum = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'));
+      return Number.isFinite(n) ? n : null;
+    };
+    const origemUf = (form.uf_origem || '').toUpperCase().trim();
+    const brutaPct = pctNum(form.aliquotaIcmsBruta ?? form.aliquotaIcms);
+    const allInSIcmsTot = Number(calculos.sIcms.total) || 0;
+    const allInCIcmsTot = Number(calculos.cIcms.total) || 0;
+    const pedCIcms = Number(calculos.cIcms.pedagio) || 0;
+
+    /** PR: (All In C/ICMS − pedágio C/ICMS); demais UF: All In S/ICMS (col. 1) × L11 inteiro sobre esse total. */
+    const base =
+      origemUf === 'PR'
+        ? Math.max(0, allInCIcmsTot - pedCIcms)
+        : Math.max(0, allInSIcmsTot);
+
+    let issPct = null;
+    let issRegistro = null;
+    const origNome = form.origem;
+    if (listaMatrizIss?.length && String(origNome || '').trim()) {
+      issRegistro = listaMatrizIss.find((row) =>
+        cidadeIssMatch(origNome, row.cidade)
+      );
+      if (issRegistro?.aliquota != null && issRegistro?.aliquota !== '') {
+        issPct = pctNum(issRegistro.aliquota);
+      }
+    }
+
+    const icmsValor =
+      brutaPct != null && brutaPct > 0 ? base * (brutaPct / 100) : null;
+    const issValor =
+      issPct != null && issPct > 0 ? base * (issPct / 100) : null;
+
+    return {
+      origemUf,
+      base,
+      regra: origemUf === 'PR' ? 'PR' : 'outra_uf',
+      brutaPct,
+      icmsValor,
+      issPct,
+      issValor,
+      issCidadeCadastro: issRegistro?.cidade || null,
+    };
+  }, [form.uf_origem, form.origem, form.aliquotaIcms, form.aliquotaIcmsBruta, calculos, listaMatrizIss]);
+
+  const consultarQualp = async () => {
+    setQualpErro('');
+    if (!(form.origem || '').trim() || !(form.uf_origem || '').trim()) {
+      setQualpErro('Informe cidade e UF de origem para consultar a QualP.');
+      return;
+    }
+    if (!(form.destino || '').trim() || !(form.uf_destino || '').trim()) {
+      setQualpErro('Informe cidade e UF de destino para consultar a QualP.');
+      return;
+    }
+    if (!String(form.tipoVeiculo || '').trim()) {
+      setQualpErro('Selecione o tipo de veículo (eixos vêm do cadastro de veículo).');
+      return;
+    }
+    const seq = ++qualpAutoFetchSeqRef.current;
+    setQualpBuscando(true);
+    try {
+      const payload = buildQualpPayloadFromForm(form, eixosConsultaQualp);
+      const data = await fetchJsonPost('/qualp/consulta/', payload);
+      if (seq !== qualpAutoFetchSeqRef.current) return;
+      setForm(mergeQualpApiIntoForm(data));
+    } catch (e) {
+      if (seq !== qualpAutoFetchSeqRef.current) return;
+      setQualpErro(e.message || String(e));
+    } finally {
+      if (seq === qualpAutoFetchSeqRef.current) setQualpBuscando(false);
+    }
+  };
+
+  const salvarCotacao = async () => {
+    setCotacaoSalvarErro('');
+    setCotacaoSalvaOk('');
+
+    // validação mínima
+    if (!String(form.cliente || '').trim()) {
+      setCotacaoSalvarErro('Informe o cliente antes de salvar.');
+      return;
+    }
+    if (!String(form.contato || '').trim()) {
+      setCotacaoSalvarErro('Selecione/Confirme o solicitante antes de salvar.');
+      return;
+    }
+    if (!String(form.origem || '').trim() || !String(form.destino || '').trim()) {
+      setCotacaoSalvarErro('Informe origem e destino antes de salvar.');
+      return;
+    }
+
+    setCotacaoSalvando(true);
+    try {
+      const payload = {
+        tipo: String(form.contratacao || 'SPOT').toUpperCase() === 'DEDICADO'
+          ? 'DEDICADO'
+          : String(form.contratacao || 'SPOT').toUpperCase() === 'FAIXA_KM'
+            ? 'FAIXA_KM'
+            : 'SPOT',
+        cliente_id: form.cliente_id || null,
+        cliente_nome: form.cliente || '',
+        cliente_cnpj: form.cliente_cnpj || '',
+        solicitante_nome: form.contato || '',
+        solicitante_email: form.email || '',
+        solicitante_telefone: form.fone || '',
+        origem: form.origem || '',
+        uf_origem: form.uf_origem || '',
+        destino: form.destino || '',
+        uf_destino: form.uf_destino || '',
+        ctrb_orcado: toDec(form.ctrbOrcado),
+        frete_all_in_sicms: toDec(calculos.sIcms?.total),
+        frete_all_in_cicms: toDec(calculos.cIcms?.total),
+        frete_all_in_desc: toDec(calculos.descSeguro?.total),
+        lair_pct: toDec(calculos?.dre?.lairPct ?? calculos?.lairReal ?? 0),
+        lair_valor: toDec(calculos?.dre?.lairValor ?? 0),
+        observacao: form.observacao || '',
+        contratacao: form.contratacao || 'SPOT',
+        tabela_cliente: form.tabelaCliente || '',
+        tipo_veiculo: form.tipoVeiculo || '',
+        tipo_semireboque: form.tipoSemireboque || '',
+        pedagio_utilizado: toDec(form.pedagioCusto),
+        distancia_km: (() => {
+          const km = parseKmQualp(form.qualpKm);
+          return km != null ? km : 0;
+        })(),
+        frete_minimo_antt: toDec(form.qualpFreteMinimoValor),
+        valor_mercadoria: toDec(form.valorMercadoria),
+        taxa_adicional_entrega: toDec(form.taxaAdicionalEntrega),
+        qtd_ajudante: toDec(form.qtdAjudante),
+        lair_desejada: toDec(form.percentualLairDesejada),
+        ajuste_comercial_pct: toDec(form.percentualDescontoSeguro),
+        aliquota_bruta: toDec(form.aliquotaIcmsBruta ?? form.aliquotaIcms ?? 0),
+        aliquota_reduzida: toDec(form.aliquotaIcmsReduzida ?? 0),
+        spot_k11_pct: toDec(form.spotK11Pct ?? 0),
+        antt_freight_type: form.anttFreightType || 'A',
+        antt_load_type: form.anttLoadType || 'geral',
+        antt_empty_return: !!form.anttEmptyReturn,
+        antt_retroactive_date: form.anttRetroactiveDate || '',
+
+        frete_peso_sicms: toDec(calculos.sIcms?.fretePeso),
+        seguro_sicms: toDec(calculos.sIcms?.seguro),
+        gris_sicms: toDec(calculos.sIcms?.gris),
+        pedagio_sicms: toDec(calculos.sIcms?.pedagio),
+        outros_sicms: toDec((calculos.sIcms?.carga || 0) + (calculos.sIcms?.adicional || 0)),
+
+        frete_peso_cicms: toDec(calculos.cIcms?.fretePeso),
+        seguro_cicms: toDec(calculos.cIcms?.seguro),
+        gris_cicms: toDec(calculos.cIcms?.gris),
+        pedagio_cicms: toDec(calculos.cIcms?.pedagio),
+        outros_cicms: toDec((calculos.cIcms?.carga || 0) + (calculos.cIcms?.adicional || 0)),
+
+        dre_rob: toDec(calculos?.dre?.rob ?? 0),
+        dre_icms_iss: toDec(calculos?.dre?.icmsIss ?? 0),
+        dre_imp_fed: toDec(calculos?.dre?.impFed ?? 0),
+        dre_credito: toDec(calculos?.dre?.credito ?? 0),
+        dre_rol: toDec(calculos?.dre?.rol ?? 0),
+        dre_cv: toDec(calculos?.dre?.cv ?? 0),
+        dre_cf: toDec(calculos?.dre?.cf ?? 0),
+        dre_csp: toDec(calculos?.dre?.csp ?? 0),
+        dre_lo: toDec(calculos?.dre?.lo ?? 0),
+        dre_desp_fin: toDec(calculos?.dre?.despFin ?? 0),
+        dre_lair: toDec(calculos?.dre?.lairValor ?? 0),
+      };
+
+      const res = await fetchJsonPost('/cotacoes/', payload);
+      setCotacaoNumero(res?.id ?? null);
+      setCotacaoSalvaOk(`Cotação salva (#${res?.id ?? '—'}) — validade 30 dias.`);
+    } catch (e) {
+      setCotacaoSalvarErro(e.message || String(e));
+    } finally {
+      setCotacaoSalvando(false);
+    }
+  };
+
+  const gerarPdfProposta = async () => {
+    try {
+      const base = getApiBase();
+      let template = null;
+      try {
+        const res = await fetch(`${base}/proposta-template/`);
+        const data = await res.json();
+        if (res.ok) template = data;
+      } catch {
+        template = null;
+      }
+      await gerarPropostaTecnicaPdf({
+        numeroCotacao: cotacaoNumero ?? (viewId ? Number(viewId) : null),
+        cliente_nome: form.cliente,
+        cliente_cnpj: form.cliente_cnpj,
+        contato: form.contato,
+        email: form.email,
+        origem: form.origem,
+        uf_origem: form.uf_origem,
+        destino: form.destino,
+        uf_destino: form.uf_destino,
+        tipoVeiculo: form.tipoVeiculo,
+        qtdAjudante: form.qtdAjudante,
+        taxaAdicionalEntrega: form.taxaAdicionalEntrega,
+        valorMercadoria: form.valorMercadoria,
+        sIcms: calculos.sIcms,
+        cIcms: calculos.cIcms,
+        frete_all_in_sicms: calculos.sIcms?.total,
+        frete_all_in_cicms: calculos.cIcms?.total,
+        template,
+      });
+    } catch (e) {
+      setCotacaoSalvarErro(e.message || String(e));
+    }
+  };
 
   const formatBRL = (val) => Number(val).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -604,13 +1199,42 @@ const NovaCotacao = () => {
         <div className="flex items-center gap-3">
           <div className="bg-blue-600 p-2 rounded-lg"><FileText className="text-white" size={20}/></div>
           <h1 className="text-xl font-black uppercase italic text-blue-900">Rota<span className="text-blue-600">Lume</span></h1>
+          {(isReadOnly || cotacaoCarregando) && (
+            <span className="ml-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase text-slate-700">
+              {cotacaoCarregando ? 'Carregando…' : 'Somente visualização'}
+            </span>
+          )}
         </div>
         <div className="flex gap-2">
           <button onClick={() => window.location.reload()} className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded font-bold text-xs uppercase transition-all"><RotateCcw size={14}/> Limpar</button>
-          <button className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-bold text-xs uppercase shadow-md transition-all"><Save size={14}/> Salvar Cotação</button>
+          {!isReadOnly && (
+            <button
+              disabled={cotacaoSalvando}
+              onClick={salvarCotacao}
+              className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded font-bold text-xs uppercase shadow-md transition-all"
+            >
+              <Save size={14}/> {cotacaoSalvando ? 'Salvando…' : 'Salvar Cotação'}
+            </button>
+          )}
         </div>
       </div>
 
+      {(cotacaoSalvarErro || cotacaoSalvaOk) && (
+        <div className="mt-3">
+          {cotacaoSalvarErro && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-[11px] font-semibold text-red-800">
+              {cotacaoSalvarErro}
+            </div>
+          )}
+          {cotacaoSalvaOk && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-[11px] font-semibold text-emerald-800">
+              {cotacaoSalvaOk}
+            </div>
+          )}
+        </div>
+      )}
+
+      <fieldset disabled={isReadOnly} className={isReadOnly ? 'opacity-95' : ''}>
       {/* IDENTIFICAÇÃO DO CLIENTE */}
     <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
       <div className="bg-blue-800 text-white px-4 py-1.5 text-[10px] font-bold uppercase flex justify-between tracking-widest">
@@ -910,14 +1534,36 @@ const NovaCotacao = () => {
 
               {/* CTRB ORÇADO */}
               <div className="grid grid-cols-2 gap-3 mt-2">
-                {/* Campo: CTRB Orçado */}
-                <div className="bg-[#fdf2e9] p-3 rounded-lg border border-[#f5d9c5]">
-                  <label className="block text-[10px] font-black text-[#845132] uppercase mb-1">
+                {/* Campo: CTRB Orçado — calculado por km × tarifa da faixa (cadastro); vermelho se &lt; frete mín. ANTT */}
+                <div
+                  className={`p-3 rounded-lg border transition-colors ${
+                    ctrbCardAlerta === 'below'
+                      ? 'border-red-500 bg-red-50 ring-1 ring-red-200/80'
+                      : ctrbCardAlerta === 'above'
+                        ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-200/80'
+                        : 'border-[#f5d9c5] bg-[#fdf2e9]'
+                  }`}
+                >
+                  <label
+                    className={`block text-[10px] font-black uppercase mb-1 ${
+                      ctrbCardAlerta === 'below'
+                        ? 'text-red-800'
+                        : ctrbCardAlerta === 'above'
+                          ? 'text-emerald-900'
+                          : 'text-[#845132]'
+                    }`}
+                  >
                     CTRB Orçado (R$)
                   </label>
                   <input 
                     type="text" 
-                    className="w-full bg-transparent font-black text-xl outline-none text-[#845132]"
+                    className={`w-full bg-transparent font-black text-xl outline-none ${
+                      ctrbCardAlerta === 'below'
+                        ? 'text-red-900'
+                        : ctrbCardAlerta === 'above'
+                          ? 'text-emerald-900'
+                          : 'text-[#845132]'
+                    }`}
                     placeholder="R$ 0,00"
                     value={form.ctrbOrcadoVisual || ''}
                     onChange={(e) => {
@@ -930,6 +1576,34 @@ const NovaCotacao = () => {
                       });
                     }}
                   />
+                  <p
+                    className={`mt-1.5 text-[9px] font-medium leading-snug ${
+                      ctrbCardAlerta === 'below'
+                        ? 'text-red-800/90'
+                        : ctrbCardAlerta === 'above'
+                          ? 'text-emerald-900/90'
+                          : 'text-[#845132]/90'
+                    }`}
+                  >
+                    {ctrbTarifaUsada != null && (
+                      <span className="block">
+                        Tarifa usada (R$/km):{' '}
+                        <span className="font-black">
+                          {ctrbTarifaUsada.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </span>
+                    )}
+                    {ctrbCardAlerta === 'below' && form.qualpFreteMinimoVisual && (
+                      <span className="block font-bold mt-0.5">
+                        Abaixo do frete mín. ANTT (ref.): {form.qualpFreteMinimoVisual}
+                      </span>
+                    )}
+                    {ctrbCardAlerta === 'above' && form.qualpFreteMinimoVisual && (
+                      <span className="block font-bold mt-0.5 text-emerald-800">
+                        Acima ou igual ao frete mín. ANTT (ref.).
+                      </span>
+                    )}
+                  </p>
                 </div>
 
                 {/* Campo: Pedágio CTRB */}
@@ -952,8 +1626,97 @@ const NovaCotacao = () => {
                       });
                     }}
                   />
+                  <p className="mt-1.5 text-[9px] font-medium leading-snug text-[#845132]/90">
+                    Preenche com o pedágio da QualP após &quot;Buscar&quot;; pode ajustar manualmente.
+                  </p>
                 </div>
               </div>
+
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-[#f5d9c5] bg-[#fffaf5] px-3 py-2.5 shadow-sm">
+                  <span className="block text-[10px] font-black uppercase text-[#845132]">Distância rota (origem → destino)</span>
+                  <span className="text-lg font-black tabular-nums text-[#845132]">
+                    {form.qualpKm ? `${form.qualpKm} km` : '—'}
+                  </span>
+                </div>
+                <div className="rounded-lg border border-[#f5d9c5] bg-[#fffaf5] px-3 py-2.5 shadow-sm">
+                  <span className="block text-[10px] font-black uppercase text-[#845132]">Frete mín. ANTT (ref.)</span>
+                  <span className="text-lg font-black tabular-nums text-[#845132]">
+                    {form.qualpFreteMinimoVisual || '—'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-3 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[10px] font-black uppercase text-blue-900">QualP — parâmetros</span>
+                  <span className="text-[9px] font-semibold uppercase text-blue-600">
+                    Tabela:&nbsp;<span className="text-blue-900">{form.anttFreightType || '—'}</span>
+                  </span>
+                </div>
+                
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <div>
+                    <label className="block text-[9px] font-bold uppercase text-slate-500">Tabela ANTT</label>
+                    <select
+                      className="mt-0.5 w-full rounded border border-slate-200 bg-white py-1.5 text-[11px] font-semibold"
+                      value={form.anttFreightType}
+                      onChange={(e) => setForm({ ...form, anttFreightType: e.target.value })}
+                    >
+                      {['A', 'B', 'C', 'D'].map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="col-span-2 sm:col-span-2">
+                    <label className="block text-[9px] font-bold uppercase text-slate-500">Tipo de carga</label>
+                    <select
+                      className="mt-0.5 w-full rounded border border-slate-200 bg-white py-1.5 text-[11px] font-semibold"
+                      value={form.anttLoadType}
+                      onChange={(e) => setForm({ ...form, anttLoadType: e.target.value })}
+                    >
+                      {ANTT_LOAD_TYPES.map((x) => (
+                        <option key={x.value} value={x.value}>{x.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                  <label className="flex cursor-pointer items-center gap-2 font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={!!form.anttEmptyReturn}
+                      onChange={(e) => setForm({ ...form, anttEmptyReturn: e.target.checked })}
+                    />
+                    Retorno vazio
+                  </label>
+                  <div className="flex flex-1 flex-wrap items-center gap-2 min-w-[140px]">
+                    <label className="text-[9px] font-bold uppercase text-slate-500 whitespace-nowrap">Data ANTT</label>
+                    <input
+                      type="date"
+                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px]"
+                      value={form.anttRetroactiveDate || ''}
+                      onChange={(e) => setForm({ ...form, anttRetroactiveDate: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                {qualpErro && (
+                  <p className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-semibold text-red-800">{qualpErro}</p>
+                )}
+
+                <button
+                  type="button"
+                  disabled={qualpBuscando}
+                  onClick={consultarQualp}
+                  className="w-full rounded-lg bg-blue-700 py-2.5 text-[11px] font-black uppercase tracking-wider text-white shadow hover:bg-blue-800 disabled:opacity-55"
+                >
+                  {qualpBuscando ? 'Consultando QualP…' : 'Buscar km, pedágio e frete mín. ANTT'}
+                </button>
+              </div>
+
             </div>
           </div>
           
@@ -1001,32 +1764,45 @@ const NovaCotacao = () => {
                 </div>
               </div>
             </div>
-            <div className="bg-slate-50 p-2 rounded border border-slate-100">
-              <label className="block text-[10px] font-bold uppercase text-slate-500">% K11 planilha SPOT (opcional)</label>
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Vazio = alíq. reduzida ICMS ou % repasse (D9)"
-                className="w-full bg-transparent font-bold outline-none text-sm"
-                value={form.spotK11Pct || ''}
-                onChange={(e) => setForm({ ...form, spotK11Pct: e.target.value })}
-              />
-              <p className="text-[9px] text-slate-400 mt-1">Matriz Bases: L11 = alíq. bruta; K11 vazio = alíq. reduzida da rota (ex. 9,6 com L 12 → 59,23%).</p>
-            </div>
+            
           </div>
           
           {/* AJUSTE COMERCIAL */}
-          <div onClick={() => inputRef.current?.focus()} className="bg-white rounded-lg border-2 border-green-600 overflow-hidden shadow-md cursor-text p-4 bg-green-50">
-              <div className="flex items-center gap-2 text-green-700 font-black uppercase text-xs mb-2"><Percent size={14}/> Ajuste Comercial</div>
-              <div className="flex items-baseline">
-                <input 
-                  ref={inputRef} type="number" step="0.01" 
-                  value={form.percentualDescontoSeguro || ''} 
-                  className="w-[120px] text-4xl font-black text-green-700 bg-transparent outline-none"
-                  onChange={(e) => setForm({ ...form, percentualDescontoSeguro: e.target.value })}
-                />
-                <span className="text-4xl font-black text-green-700">%</span>
+          <div
+            onClick={() => inputRef.current?.focus()}
+            className="cursor-text overflow-hidden rounded-xl border border-amber-300 bg-amber-50/60 shadow-sm"
+          >
+            <div className="grid grid-cols-12">
+              {/* Lado esquerdo (itens em branco) */}
+              <div className="col-span-12 sm:col-span-5 bg-white px-4 py-4 border-b sm:border-b-0 sm:border-r border-amber-200">
+                <div className="flex items-center gap-2 text-amber-900 font-black uppercase text-[11px] tracking-wide">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-200/70 text-amber-900">
+                    <Percent size={14} />
+                  </span>
+                  Ajuste Comercial
+                </div>
+                <p className="mt-2 text-[10px] leading-snug text-amber-900/70 font-semibold">
+                  Desconto aplicado em <span className="font-black">frete peso</span>, <span className="font-black">seguro</span> e{' '}
+                  <span className="font-black">GRIS</span> (S/ICMS e C/ICMS).
+                </p>
               </div>
+
+              {/* Lado direito (percentual centralizado) */}
+              <div className="col-span-12 sm:col-span-7 px-4 py-4 flex flex-col items-center justify-center text-center">
+                <div className="text-[9px] font-black uppercase tracking-widest text-amber-900/70">Percentual</div>
+                <div className="mt-1 flex items-baseline justify-center gap-2">
+                  <input
+                    ref={inputRef}
+                    type="number"
+                    step="0.01"
+                    value={form.percentualDescontoSeguro || ''}
+                    className="w-[140px] bg-transparent text-5xl font-black text-amber-900 outline-none tabular-nums text-center"
+                    onChange={(e) => setForm({ ...form, percentualDescontoSeguro: e.target.value })}
+                  />
+                  <span className="text-4xl font-black text-amber-900">%</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1084,33 +1860,174 @@ const NovaCotacao = () => {
                 </tr>
               </tbody>
             </table>
-            
-            <div className="flex-1 p-8 flex justify-between items-center bg-slate-50 border-t border-slate-200">
-              <div>
-                <span className="text-[10px] font-black uppercase text-slate-400 block tracking-[0.3em] mb-1">DRE — LAIR (sobre ROL)</span>
-                <div className="flex items-baseline gap-2">
-                  <span className={`text-5xl font-black ${Number(calculos.lairReal) < Number(form.percentualLairDesejada || 0) ? 'text-red-600' : 'text-green-700'}`}>
-                    {calculos.lairReal}%
+
+            {/* ICMS / ISS — faixa 3 colunas (referência visual: label marinho | ICMS marinho | ISS verde) */}
+            <div className="border-t border-black bg-black">
+              <div className="grid min-h-[4.25rem] grid-cols-[minmax(0,3fr)_minmax(0,1fr)_minmax(0,1fr)] border border-black">
+                <div className="flex items-center justify-center border-r border-black bg-[#0c1929] px-3 py-4 sm:px-6">
+                  <span className="text-center text-sm font-black uppercase tracking-wide text-white sm:text-base">
+                    ICMS / ISS
                   </span>
-                  <span className="text-xs font-bold text-slate-400 uppercase italic">LAIR / ROL</span>
                 </div>
-                {calculos.dre && (
-                  <p className="text-[10px] text-slate-500 font-mono mt-2 leading-relaxed">
-                    {`ROB R$ ${formatBRL(calculos.dre.rob)} · ROL R$ ${formatBRL(calculos.dre.rol)} · LAIR R$ ${formatBRL(calculos.dre.lairValor)}`}
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-col gap-3">
-                <button className="bg-green-600 hover:bg-green-700 text-white px-10 py-4 rounded-xl font-black uppercase text-sm tracking-widest shadow-xl transition-all hover:scale-105 active:scale-95">
-                  Gerar Proposta PDF
-                </button>
-                <p className="text-[9px] text-center text-slate-400 font-bold uppercase italic">Válido por 30 dias</p>
+                <div className="flex flex-col items-center justify-center border-r border-black bg-[#0c1929] px-2 py-3">
+                  <span className="mb-0.5 text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                    ICMS
+                  </span>
+                  <span className="text-base font-black tabular-nums text-white sm:text-lg">
+                    R${' '}
+                    {formatBRL(icmsIssOrcamento.icmsValor != null ? icmsIssOrcamento.icmsValor : 0)}
+                  </span>
+                </div>
+                <div className="flex flex-col items-center justify-center bg-green-900 px-2 py-3">
+                  <span className="mb-0.5 text-[8px] font-bold uppercase tracking-wider text-green-200/90">
+                    ISS
+                  </span>
+                  <span className="text-base font-black tabular-nums text-white sm:text-lg">
+                    R${' '}
+                    {formatBRL(icmsIssOrcamento.issValor != null ? icmsIssOrcamento.issValor : 0)}
+                  </span>
+                </div>
               </div>
             </div>
+
+            {/* DRE — Base lucro (acordeão: fica fora do fieldset para funcionar em visualização) */}
+            <div className="border-t border-slate-200 bg-slate-50">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => setDreLucroExpanded((prev) => !prev)}
+                aria-expanded={dreLucroExpanded}
+                className="flex w-full items-center justify-between gap-3 px-3 py-3 sm:px-4 text-left transition-colors hover:bg-slate-100/90 focus-visible:outline focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setDreLucroExpanded((prev) => !prev);
+                  }
+                }}
+              >
+                <span className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-700">
+                  DRE — Base lucro
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <span className="hidden text-[9px] font-semibold uppercase text-slate-500 sm:inline">
+                    {dreLucroExpanded ? 'Encolher' : 'Expandir'}
+                  </span>
+                  <ChevronDown
+                    className={`h-5 w-5 text-slate-600 transition-transform duration-200 ${dreLucroExpanded ? 'rotate-180' : ''}`}
+                    aria-hidden
+                  />
+                </span>
+              </div>
+              {dreLucroExpanded && (
+                <div className="border-t border-slate-200 px-3 pb-4 pt-2 sm:px-4">
+                  <div className="mx-auto max-w-full overflow-x-auto">
+                    <table className="w-full min-w-[520px] border-collapse border border-slate-400 bg-white text-[12px]">
+                      <thead>
+                        <tr className="bg-slate-300 text-slate-900">
+                          <th className="border border-slate-400 px-3 py-2 text-left font-black uppercase">DRE - BASE LUCRO</th>
+                          <th className="border border-slate-400 px-3 py-2 text-right font-black uppercase tabular-nums">Valor</th>
+                          <th className="border border-slate-400 px-3 py-2 text-right font-black uppercase tabular-nums">%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const dre = calculos.dre;
+                          const pctFrom = (num, den) => {
+                            const a = Number(num);
+                            const b = Number(den);
+                            if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return '—';
+                            return `${((a / b) * 100).toFixed(2).replace('.', ',')}%`;
+                          };
+                          const pctFromRol = (num, denRol) => {
+                            const a = Number(num);
+                            const b = Number(denRol);
+                            if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return '—';
+                            return `${((a / b) * 100).toFixed(2).replace('.', ',')}%`;
+                          };
+                          const fmtAbs = (v) => (Number.isFinite(Number(v)) ? formatBRL(Math.abs(Number(v))) : '0,00');
+                          const fmtSigned = (v) => {
+                            const x = Number(v);
+                            if (!Number.isFinite(x)) return '—';
+                            const sinal = x < 0 ? '-' : '';
+                            return `${sinal}R$ ${formatBRL(Math.abs(x))}`;
+                          };
+
+                          const rows = [
+                            { key: 'rob', label: 'ROB', value: dre ? dre.rob : 0, pct: '100,00%', negative: false },
+                            { key: 'icmsiss', label: '(-) ICMS/ISS', value: dre ? dre.icmsIss : 0, pct: dre ? pctFrom(dre.icmsIss, dre.rob) : '—', negative: true },
+                            { key: 'impfed', label: '(-) IMP.FED', value: dre ? dre.impFed : 0, pct: dre ? pctFrom(dre.impFed, dre.rob) : '—', negative: true },
+                            { key: 'cred', label: '(+) CREDITO', value: dre ? dre.credito : 0, pct: dre ? (dre.creditoPct != null ? `${Number(dre.creditoPct).toFixed(2).replace('.', ',')}%` : '—') : '—', negative: false },
+                            { key: 'rol', label: 'ROL', value: dre ? dre.rol : 0, pct: dre ? pctFrom(dre.rol, dre.rob) : '—', negative: false },
+                            { key: 'csp', label: 'CSP', value: dre ? dre.csp : 0, pct: dre ? pctFromRol(dre.csp, dre.rol) : '—', negative: true },
+                            { key: 'cv', label: 'C.V', value: dre ? dre.cv : 0, pct: dre ? pctFromRol(dre.cv, dre.rol) : '—', negative: true },
+                            { key: 'cf', label: 'C.F', value: dre ? dre.cf : 0, pct: dre ? pctFromRol(dre.cf, dre.rol) : '—', negative: true },
+                            { key: 'lo', label: 'L.O', value: dre ? dre.lo : 0, pct: dre ? pctFromRol(dre.lo, dre.rol) : '—', negative: false },
+                            { key: 'despfin', label: 'DESP./FIN.', value: dre ? dre.despFin : 0, pct: dre ? (dre.despFinPct != null ? `${Number(dre.despFinPct).toFixed(2).replace('.', ',')}%` : '—') : '—', negative: true },
+                            { key: 'lair', label: 'LAIR', value: dre ? dre.lairValor : 0, pct: dre ? pctFromRol(dre.lairValor, dre.rol) : '—', negative: false, isTotal: true },
+                          ];
+
+                          return rows.map((r) => {
+                            const valueIsNeg = Number(r.value) < 0 || r.negative;
+                            const valorBg = valueIsNeg ? 'bg-red-100' : 'bg-green-100';
+                            const valorText = valueIsNeg ? 'text-red-700' : 'text-green-800';
+                            const pctBg = valueIsNeg ? 'bg-red-100' : 'bg-green-100';
+                            const pctText = valueIsNeg ? 'text-red-700' : 'text-green-800';
+                            const leftBg = r.isTotal ? 'bg-slate-300' : 'bg-slate-200';
+                            const rowFont = r.isTotal ? 'font-black' : 'font-semibold';
+                            return (
+                              <tr key={r.key}>
+                                <td className={`border border-slate-400 px-3 py-2 ${leftBg} ${rowFont} text-slate-900`}>
+                                  {r.label}
+                                </td>
+                                <td className={`border border-slate-400 px-3 py-2 text-right font-black tabular-nums ${valorBg} ${valorText}`}>
+                                  {dre ? fmtSigned(r.value) : `R$ ${fmtAbs(0)}`}
+                                </td>
+                                <td className={`border border-slate-400 px-3 py-2 text-right font-black tabular-nums ${pctBg} ${pctText}`}>
+                                  {r.pct}
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                    {!calculos.dre && (
+                      <p className="mt-2 text-center text-[10px] italic text-slate-500">
+                        Exemplo (valores zerados). Preencha CTRB e alíquotas para calcular.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            
           </div>
           </div>
+
+        </fieldset>
+
+        <div className="flex-1 p-8 flex justify-between items-center bg-slate-50 border-t border-slate-200">
+          <div>
+            <div className="flex items-baseline gap-2">
+              <span className={`text-5xl font-black ${Number(calculos.lairReal) < Number(form.percentualLairDesejada || 0) ? 'text-red-600' : 'text-green-700'}`}>
+                {calculos.lairReal}%
+              </span>
+              <span className="text-xs font-bold text-slate-400 uppercase italic">LAIR </span>
+            </div>
           </div>
-          );
-          };
+          <div className="flex flex-col gap-3">
+            <button
+              type="button"
+              onClick={gerarPdfProposta}
+              className="bg-green-600 hover:bg-green-700 text-white px-10 py-4 rounded-xl font-black uppercase text-sm tracking-widest shadow-xl transition-all hover:scale-105 active:scale-95"
+            >
+              Gerar Proposta PDF
+            </button>
+            <p className="text-[9px] text-center text-slate-400 font-bold uppercase italic">Válido por 30 dias</p>
+          </div>
+        </div>
+    </div>
+  );
+};
 
 export default NovaCotacao;

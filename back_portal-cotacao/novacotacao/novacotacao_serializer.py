@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    Cliente, Solicitante, Veiculo, Semireboque)
+    Cliente, Solicitante, Veiculo, Semireboque, Cotacao)
 class ClienteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cliente
@@ -23,3 +23,9 @@ class SemireboqueSerializer(serializers.ModelSerializer):
     class Meta:
         model = Semireboque
         fields = '__all__'
+
+
+class CotacaoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Cotacao
+        fields = "__all__"

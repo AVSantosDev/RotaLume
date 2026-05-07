@@ -1,29 +1,44 @@
-# Ambientes Virtuais (Obrigatório ignorar)
+# Ambientes virtuais locais
 venv/
 .venv/
 env/
+ENV/
 
-# Cache do Python
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.tox/
+*.egg-info/
+.eggs/
 
-# Banco de Dados local (para não misturar com o Postgres do Docker)
+# Base de dados local (usa Postgres no compose)
 *.sqlite3
 
-# Logs e arquivos temporários
-*.log
-.DS_Store
+# Ficheiros geridos em runtime (uploads, collectstatic)
+media/
+staticfiles/
 
-# Controle de Versão (não precisa ir para o container)
+# Segredos
+.env
+.env.*
+!.env.example
+
+# Git e IDE
 .git/
 .gitignore
-
-# Configurações de editores
 .vscode/
 .idea/
 
-# Docker (não precisa copiar os próprios arquivos de config)
+# Logs e OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Docker (não entram no COPY . .)
 Dockerfile
 .dockerignore

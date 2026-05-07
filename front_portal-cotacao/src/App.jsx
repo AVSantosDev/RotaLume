@@ -6,6 +6,10 @@ import TruckIconTruck from "./components/TruckIconTruck";
 import Layout from "./components/Layout";
 import NovaCotacao from "./pages/NovaCotacao";
 import Configuracoes from "./pages/Configuracoes";
+import ConfigSistema from "./pages/ConfigSistema";
+import CotacaoDedicado from "./pages/CotacaoDedicado";
+import CotacaoFaixaKm from "./pages/CotacaoFaixaKm";
+import ConsultarCotacoes from "./pages/ConsultarCotacoes";
 
 // 1. Criamos um componente apenas para a tela de Login (com a animação)
 const LoginView = () => {
@@ -43,7 +47,7 @@ const LoginView = () => {
   );
 };
 
-// 2. O componente App agora gerencia apenas as Rotas
+
 function App() {
   return (
     <BrowserRouter>
@@ -55,12 +59,15 @@ function App() {
         <Route element={<Layout />}>
           <Route path="/dashboard" element={<h1 className="text-2xl font-bold">Indicadores de Performance</h1>} />
           <Route path="/cotacao" element={<NovaCotacao />} />
+          <Route path="/cotacao/dedicado" element={<CotacaoDedicado />} />
+          <Route path="/cotacao/faixa-km" element={<CotacaoFaixaKm />} />
           
           {/* ADICIONE ESTAS DUAS LINHAS ABAIXO */}
-          <Route path="/consultar" element={<h1 className="text-2xl font-bold">Histórico de Cotações</h1>} />
+          <Route path="/consultar" element={<ConsultarCotacoes />} />
           <Route path="/relatorios" element={<h1 className="text-2xl font-bold">Relatórios Operacionais</h1>} />
           
           <Route path="/configuracao" element={<Configuracoes />} />
+          <Route path="/configuracao/sistema" element={<ConfigSistema />} />
         </Route>
 
         {/* Redireciona qualquer rota inexistente para o login */}
@@ -74,4 +81,3 @@ function App() {
 
 
 export default App;
-
