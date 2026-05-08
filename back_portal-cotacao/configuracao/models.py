@@ -10,7 +10,7 @@ class IcmsEstado(models.Model):
     aliquota = models.DecimalField(max_digits=5, decimal_places=2)
 
     class Meta:
-        managed = False          
+        managed = False
         db_table = 'tabela_icms' 
         ordering = ['origem', 'destino']
 
