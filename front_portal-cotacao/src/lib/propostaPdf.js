@@ -7,6 +7,22 @@ import { buildPropostaHtml } from './propostaTemplateHtml';
  * @param {object} data dados da cotação
  */
 export async function gerarPropostaTecnicaPdf(data) {
+  const { filename, blob } = await gerarPropostaTecnicaPdfBlob(data);
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Gera o PDF e devolve Blob (para download/envio). */
+export async function gerarPropostaTecnicaPdfBlob(data) {
   const numero = data?.numeroCotacao ? String(data.numeroCotacao) : '';
 
   const el = document.createElement('div');
@@ -30,19 +46,19 @@ export async function gerarPropostaTecnicaPdf(data) {
     });
     const imgData = canvas.toDataURL('image/png');
 
-    // A4 landscape
     const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
     const pageW = pdf.internal.pageSize.getWidth();
     const pageH = pdf.internal.pageSize.getHeight();
 
-    // encaixar mantendo proporção
     const imgW = pageW;
     const imgH = (canvas.height * imgW) / canvas.width;
     const y = Math.max(0, (pageH - imgH) / 2);
     pdf.addImage(imgData, 'PNG', 0, y, imgW, imgH, undefined, 'FAST');
 
     const safeNum = numero ? `_${numero}` : '';
-    pdf.save(`Proposta_Comercial${safeNum}.pdf`);
+    const filename = `Proposta_Comercial${safeNum}.pdf`;
+    const blob = pdf.output('blob');
+    return { filename, blob };
   } finally {
     document.body.removeChild(el);
   }

@@ -62,6 +62,16 @@ class Veiculo(models.Model):
     tarifa_acima_500 = models.DecimalField(
         max_digits=14, decimal_places=2, default=0, verbose_name="Acima de 500 km (R$)"
     )
+    taxa_correcao = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0,
+        verbose_name="Taxa de correção (R$)",
+    )
+    ctrb_somar_taxa_correcao = models.BooleanField(
+        default=False,
+        verbose_name="Somar taxa de correção no CTRB orçado",
+    )
 
     def __str__(self):
         return f"{self.tipo_veiculo} ({self.eixos_veiculo})"

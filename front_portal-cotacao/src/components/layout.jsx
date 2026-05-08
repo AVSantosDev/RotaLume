@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import PropTypes from "prop-types";
-import { LayoutDashboard, Truck, Settings, LogOut, FileText, Search, ChevronDown, ChevronRight, ChevronLeft, Shield, MapPin, Ruler } from "lucide-react";
+import { LayoutDashboard, Truck, Settings, LogOut, FileText, Search, ChevronDown, ChevronRight, ChevronLeft, Shield, MapPin, Ruler, Calculator } from "lucide-react";
 
 const SidebarItem = ({ icon: Icon, label, path, active, collapsed }) => (
   <Link
@@ -154,6 +154,13 @@ const Layout = () => {
             collapsed={sidebarCollapsed}
           />
           <SidebarItem
+            icon={Calculator}
+            label="Calculadora frete rápida"
+            path="/calculadora-frete"
+            active={location.pathname === "/calculadora-frete"}
+            collapsed={sidebarCollapsed}
+          />
+          <SidebarItem
             icon={Truck}
             label="Nova Cotação SPOT"
             path="/cotacao"
@@ -193,8 +200,14 @@ const Layout = () => {
             <button
               type="button"
               onClick={() => {
-                if (sidebarCollapsed) setConfigPopoverOpen((o) => !o);
-                else setConfigMenuOpen((o) => !o);
+                if (sidebarCollapsed) {
+                  // Evita popover sobrepondo o conteúdo: expande o sidebar e abre o menu interno.
+                  setSidebarCollapsed(false);
+                  setConfigPopoverOpen(false);
+                  setConfigMenuOpen(true);
+                } else {
+                  setConfigMenuOpen((o) => !o);
+                }
               }}
               className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-colors
                 ${isConfigArea ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"}
@@ -279,8 +292,8 @@ const Layout = () => {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto bg-slate-50 relative">
-        <div className="p-8">
+      <main className="flex-1 min-w-0 overflow-y-auto bg-slate-50 relative">
+        <div className="p-8 min-w-0 max-w-full">
           <Outlet />
         </div>
       </main>

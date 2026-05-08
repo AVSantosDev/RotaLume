@@ -18,6 +18,7 @@ const ConfigSistema = () => {
     access_token: '',
     validade_cache_dias: 30,
     token_configurado: false,
+    auto_consultar_ao_selecionar_veiculo: false,
   });
 
   const base = getApiBase();
@@ -56,6 +57,7 @@ const ConfigSistema = () => {
       const body = {
         api_base_url: cfg.api_base_url,
         validade_cache_dias: Number(cfg.validade_cache_dias) || 30,
+        auto_consultar_ao_selecionar_veiculo: !!cfg.auto_consultar_ao_selecionar_veiculo,
       };
       if (cfg.access_token?.trim()) {
         body.access_token = cfg.access_token.trim();
@@ -190,6 +192,21 @@ const ConfigSistema = () => {
               <p className="mt-1 text-[11px] text-slate-600 leading-snug">
                 Para a mesma origem/destino e mesmos parâmetros de tabela, o sistema devolve km, pedágio de referência e frete mínimo do banco até
                 esse prazo sem nova chamada à API.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <label className="flex items-center gap-2 text-[10px] font-bold uppercase text-slate-600">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-blue-600"
+                  checked={!!cfg.auto_consultar_ao_selecionar_veiculo}
+                  onChange={(e) => setCfg({ ...cfg, auto_consultar_ao_selecionar_veiculo: e.target.checked })}
+                />
+                Buscar QualP automaticamente ao selecionar veículo
+              </label>
+              <p className="mt-1 text-[11px] text-slate-600 leading-snug">
+                Se desligado, km/pedágio/frete mín. ANTT só serão buscados ao clicar no botão “Buscar KM, pedágio e frete mín. ANTT”.
               </p>
             </div>
 

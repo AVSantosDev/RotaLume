@@ -48,12 +48,17 @@ const veiculoItemIntoForm = (item) => ({
       item[key] != null && item[key] !== '' ? Number(item[key]) : '',
     ]),
   ),
+  taxa_correcao:
+    item.taxa_correcao != null && item.taxa_correcao !== '' ? Number(item.taxa_correcao) : '',
+  ctrb_somar_taxa_correcao: !!item.ctrb_somar_taxa_correcao,
 });
 
 const veiculoPayloadFromForm = (fd) => {
   const o = {
     tipo_veiculo: fd.tipo,
     eixos_veiculo: parseInt(String(fd.eixos), 10) || 0,
+    taxa_correcao: parseDecimalFrete(fd.taxa_correcao),
+    ctrb_somar_taxa_correcao: !!fd.ctrb_somar_taxa_correcao,
   };
   for (const { key } of VEICULO_COLUNAS_FRETE) {
     o[key] = parseDecimalFrete(fd[key]);
@@ -80,13 +85,14 @@ const Configuracoes = () => {
   const [listaDespesas, setListaDespesas] = useState([]);
   const [listaMarkupConfig, setListaMarkupConfig] = useState([]);
 
-  // Template Proposta (global)
+  // Proposta Comercial (global)
   const baseApi = getApiBase();
   const [tplLoading, setTplLoading] = useState(false);
   const [tplSaving, setTplSaving] = useState(false);
   const [tplErr, setTplErr] = useState('');
   const [tplMsg, setTplMsg] = useState('');
   const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
+  const [tplSubTab, setTplSubTab] = useState('template'); // 'template'(layout) | 'email'(envio)
   const [tpl, setTpl] = useState({
     empresa_nome: 'ESTRELA DO ORIENTE',
     titulo: 'PROPOSTA COMERCIAL',
@@ -119,6 +125,26 @@ const Configuracoes = () => {
       frete_all_in_cicms: 0,
     });
   }, [tpl]);
+
+  // Config E-mail (SMTP) — usado no envio de proposta
+  const [emailCfgLoading, setEmailCfgLoading] = useState(false);
+  const [emailCfgSaving, setEmailCfgSaving] = useState(false);
+  const [emailCfgErr, setEmailCfgErr] = useState('');
+  const [emailCfgMsg, setEmailCfgMsg] = useState('');
+  const [emailCfg, setEmailCfg] = useState({
+    habilitado: false,
+    modo_envio: 'AUTH',
+    remetente_nome: '',
+    remetente_email: '',
+    smtp_host: '',
+    smtp_port: 587,
+    smtp_usuario: '',
+    smtp_senha: '',
+    smtp_use_tls: true,
+    relay_ip_publico: '',
+    senha_configurada: false,
+  });
+  const [emailCfgShowSenha, setEmailCfgShowSenha] = useState(false);
   const [sugestoesIssCidade, setSugestoesIssCidade] = useState([]);
 
   // Base: Clientes e Solicitantes
@@ -182,22 +208,29 @@ const Configuracoes = () => {
   }, [listaMarkupConfig]);
 
   const markupC26Rows = useMemo(() => {
-    const rows = (listaMarkupConfig || [])
-      .filter((m) => (m?.tipo || 'FAIXA').toString().toUpperCase() === 'FAIXA')
-      .map((m) => Number(m?.percentual_markup))
-      .filter((n) => Number.isFinite(n));
-    return [...new Set(rows)].sort((a, b) => b - a);
+    // Linhas fixas da planilha (C26): não permitir criar novas faixas via UI.
+    return [20, 18, 15, 12, 10];
   }, [listaMarkupConfig]);
 
   const markupMap = useMemo(() => {
     const map = new Map();
+    /** Prioriza linha “manual” (sem alíquota de rota); evita célula presa a 1 dos N ids da seed. */
+    const pickRow = (prev, m) => {
+      if (!prev) return m;
+      const prevManual = prev.aliquota_bruta == null && prev.aliquota_reduzida == null;
+      const mManual = m.aliquota_bruta == null && m.aliquota_reduzida == null;
+      if (mManual && !prevManual) return m;
+      if (prevManual && !mManual) return prev;
+      return Number(prev.id) <= Number(m.id) ? prev : m;
+    };
     for (const m of listaMarkupConfig || []) {
       const tipo = (m?.tipo || 'FAIXA').toString().toUpperCase();
       if (tipo !== 'FAIXA') continue;
       const cliente = (m?.nome_cliente || '').toString().trim().toUpperCase();
       const c26 = Number(m?.percentual_markup);
       if (!cliente || !Number.isFinite(c26)) continue;
-      map.set(`${cliente}||${c26.toFixed(2)}`, m);
+      const key = `${cliente}||${c26.toFixed(2)}`;
+      map.set(key, pickRow(map.get(key), m));
     }
     return map;
   }, [listaMarkupConfig]);
@@ -215,6 +248,7 @@ const Configuracoes = () => {
     valor: '',
     unidade: '%',
     nome_cliente: '',
+    malha_spot_tipo: 'DIVERSOS',
     seguro_taxa_1: 0,
     seguro_taxa_2: 0,
     valor_mercadoria_limite: 0,
@@ -239,6 +273,8 @@ const Configuracoes = () => {
     markup_percentual_base: '',
     markup_percentual_markup: '',
     ...emptyVeiculoFreteForm(),
+    taxa_correcao: '',
+    ctrb_somar_taxa_correcao: false,
   };
 
   // FormData unificado
@@ -381,6 +417,75 @@ const Configuracoes = () => {
       cancel = true;
     };
   }, [activeTab, baseApi]);
+
+  useEffect(() => {
+    if (activeTab !== 'template') return;
+    let cancel = false;
+    (async () => {
+      setEmailCfgLoading(true);
+      setEmailCfgErr('');
+      setEmailCfgMsg('');
+      try {
+        const res = await fetch(`${baseApi}/email-config/`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+        if (!cancel) setEmailCfg((c) => ({ ...c, ...data, smtp_senha: '' }));
+      } catch (e) {
+        if (!cancel) setEmailCfgErr(e.message || String(e));
+      } finally {
+        if (!cancel) setEmailCfgLoading(false);
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [activeTab, baseApi]);
+
+  const salvarEmailCfg = async () => {
+    setEmailCfgSaving(true);
+    setEmailCfgErr('');
+    setEmailCfgMsg('');
+    try {
+      const payload = {
+        habilitado: !!emailCfg.habilitado,
+        modo_envio: emailCfg.modo_envio || 'AUTH',
+        remetente_nome: emailCfg.remetente_nome,
+        remetente_email: emailCfg.remetente_email,
+        smtp_host: emailCfg.smtp_host,
+        smtp_port: Number(emailCfg.smtp_port) || 587,
+        smtp_usuario: emailCfg.smtp_usuario,
+        smtp_use_tls: !!emailCfg.smtp_use_tls,
+        relay_ip_publico: emailCfg.relay_ip_publico || '',
+      };
+      if (emailCfg.smtp_senha?.trim()) payload.smtp_senha = emailCfg.smtp_senha.trim();
+      const res = await fetch(`${baseApi}/email-config/`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+      setEmailCfg((c) => ({ ...c, ...data, smtp_senha: '' }));
+      setEmailCfgMsg('Configuração de e-mail gravada.');
+    } catch (e) {
+      setEmailCfgErr(e.message || String(e));
+    } finally {
+      setEmailCfgSaving(false);
+    }
+  };
+
+  const detectarIpPublicoEmail = async () => {
+    setEmailCfgErr('');
+    try {
+      const res = await fetch(`${baseApi}/email/egress-ip/`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+      setEmailCfg((c) => ({ ...c, relay_ip_publico: data.ip_publico || c.relay_ip_publico }));
+      setEmailCfgMsg('IP público detectado e preenchido.');
+    } catch (e) {
+      setEmailCfgErr(e.message || String(e));
+    }
+  };
 
   const salvarTemplateProposta = async () => {
     setTplSaving(true);
@@ -736,8 +841,9 @@ const Configuracoes = () => {
 
 
 
-  const handleExcluir = async (id) => {
-    if (!window.confirm("Confirmar exclusão definitiva?")) return;
+  const handleExcluir = async (id, opts = {}) => {
+    const { skipConfirm = false, skipReload = false } = opts || {};
+    if (!skipConfirm && !window.confirm("Confirmar exclusão definitiva?")) return;
   
     let rota = '';
   
@@ -765,13 +871,43 @@ const Configuracoes = () => {
   
       if (res.ok) {
         console.log(`>>> [SUCESSO] Item ${id} excluído de ${rota}`);
-        carregarTudo(); // Recarrega todas as listas
+        if (!skipReload) carregarTudo(); // Recarrega todas as listas
       } else {
-        alert("Erro ao excluir o item no servidor.");
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          detail = body?.detail || body?.error || JSON.stringify(body);
+        } catch {
+          try { detail = (await res.text()).slice(0, 320); } catch { /* ignore */ }
+        }
+        alert(`Erro ao excluir (${rota}): ${detail}`);
       }
     } catch (err) {
       console.error(">>> [ERRO REDE]:", err);
     }
+  };
+
+  const excluirMarkupCelula = async (nomeCliente, c26) => {
+    const cliente = (nomeCliente || '').toString().trim().toUpperCase();
+    const lair = Number(c26);
+    if (!cliente || !Number.isFinite(lair)) return;
+
+    const rows = (listaMarkupConfig || []).filter((m) => {
+      const tipo = (m?.tipo || 'FAIXA').toString().toUpperCase();
+      if (tipo !== 'FAIXA') return false;
+      const c = (m?.nome_cliente || '').toString().trim().toUpperCase();
+      return c === cliente && Math.abs(Number(m?.percentual_markup) - lair) < 0.02;
+    });
+
+    if (!rows.length) return;
+    const ok = window.confirm(`Excluir ${rows.length} registro(s) de Markup para ${cliente} / LAIR ${lair.toFixed(2)}%?`);
+    if (!ok) return;
+
+    for (const r of rows) {
+      // eslint-disable-next-line no-await-in-loop
+      await handleExcluir(r.id, { skipConfirm: true, skipReload: true });
+    }
+    carregarTudo();
   };
 
   const abrirEdicao = (item) => {
@@ -781,6 +917,7 @@ const Configuracoes = () => {
       setFormData({
         ...formData,
         nome_cliente: item.nome_cliente,
+        malha_spot_tipo: item.malha_spot_tipo || 'DIVERSOS',
         seguro_taxa_1: item.seguro_taxa_1,
         seguro_taxa_2: item.seguro_taxa_2,
         valor_mercadoria_limite: item.valor_mercadoria_limite,
@@ -937,6 +1074,7 @@ const Configuracoes = () => {
   
     const body = {
       nome_cliente: formData.nome_cliente,
+      malha_spot_tipo: formData.malha_spot_tipo || 'DIVERSOS',
       seguro_taxa_1: normalizar(formData.seguro_taxa_1),
       seguro_taxa_2: normalizar(formData.seguro_taxa_2),
       valor_mercadoria_limite: normalizar(formData.valor_mercadoria_limite),
@@ -981,32 +1119,52 @@ const Configuracoes = () => {
 
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-6 min-w-0">
       <h1 className="text-2xl font-bold text-slate-800">Painel de Configurações Operacionais</h1>
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="flex border-b border-slate-200 bg-slate-50">
-          <button onClick={() => setActiveTab('icms')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'icms' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-            <MapIcon size={18} /> Matriz ICMS
-          </button>
-          <button onClick={() => setActiveTab('iss')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'iss' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-            <Building2 size={18} /> Matriz ISS
-          </button>
-          <button onClick={() => setActiveTab('veiculos')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'veiculos' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-            <Truck size={18} /> Veículos e Semirreboques
-          </button>
-          <button onClick={() => setActiveTab('taxas')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'taxas' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-            <DollarSign size={18} /> Impostos e Taxas
-          </button>
-          <button onClick={() => setActiveTab('base')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'base' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-            <Users size={18} /> Base Clientes e Solicitantes
-          </button>
-          <button onClick={() => setActiveTab('template')} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold transition ${activeTab === 'template' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-            <FileText size={18} /> Template Proposta
-          </button>
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden max-w-full">
+        <div className="border-b border-slate-200 bg-slate-50 min-w-0">
+          {/* Mobile: sem scroll, usa seleção */}
+          <div className="sm:hidden px-4 py-3">
+            <label className="block text-[10px] font-bold uppercase text-slate-400">Seção</label>
+            <select
+              className="mt-1 w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm font-bold outline-none focus:border-blue-500"
+              value={activeTab}
+              onChange={(e) => setActiveTab(e.target.value)}
+            >
+              <option value="icms">Matriz ICMS</option>
+              <option value="iss">Matriz ISS</option>
+              <option value="veiculos">Veículos e Semirreboques</option>
+              <option value="taxas">Impostos e Taxas</option>
+              <option value="base">Base Clientes e Solicitantes</option>
+              <option value="template">Proposta Comercial</option>
+            </select>
+          </div>
+
+          {/* Desktop: uma linha, sem scroll */}
+          <div className="hidden sm:flex items-center gap-1 px-2">
+            <button onClick={() => setActiveTab('icms')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'icms' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+              <MapIcon size={16} /> Matriz ICMS
+            </button>
+            <button onClick={() => setActiveTab('iss')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'iss' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+              <Building2 size={16} /> Matriz ISS
+            </button>
+            <button onClick={() => setActiveTab('veiculos')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'veiculos' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+              <Truck size={16} /> Veículos e Semirreboques
+            </button>
+            <button onClick={() => setActiveTab('taxas')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'taxas' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+              <DollarSign size={16} /> Impostos e Taxas
+            </button>
+            <button onClick={() => setActiveTab('base')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'base' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+              <Users size={16} /> Base Clientes e Solicitantes
+            </button>
+            <button onClick={() => setActiveTab('template')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'template' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+              <FileText size={16} /> Proposta Comercial
+            </button>
+          </div>
         </div>
 
-        <div className="p-6">
+        <div className="p-6 min-w-0 max-w-full">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-6">
             <h2 className="font-bold text-slate-700 text-lg uppercase">
               {activeTab === 'icms'
@@ -1020,7 +1178,7 @@ const Configuracoes = () => {
                     : activeTab === 'base'
                       ? 'Base de Clientes e Solicitantes'
                       : activeTab === 'template'
-                        ? 'Template da Proposta (PDF)'
+                        ? 'Proposta Comercial — Layout e Envio'
                       : `Taxas: ${subAbaAtiva}`}
             </h2>
             
@@ -1067,24 +1225,46 @@ const Configuracoes = () => {
 
           {activeTab === 'template' && (
             <div className="space-y-4">
+              <div className="flex gap-2 border-b border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setTplSubTab('template')}
+                  className={`px-4 py-2 text-[11px] font-black uppercase tracking-wider ${
+                    tplSubTab === 'template' ? 'border-b-2 border-blue-600 text-blue-700' : 'text-slate-400'
+                  }`}
+                >
+                  Layout
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTplSubTab('email')}
+                  className={`px-4 py-2 text-[11px] font-black uppercase tracking-wider ${
+                    tplSubTab === 'email' ? 'border-b-2 border-blue-600 text-blue-700' : 'text-slate-400'
+                  }`}
+                >
+                  Envio
+                </button>
+              </div>
+
               {tplErr && (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{tplErr}</div>
               )}
               {tplMsg && (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">{tplMsg}</div>
               )}
-              {tplLoading ? (
-                <div className="text-sm text-slate-500">Carregando template...</div>
-              ) : (
-                <div className="grid grid-cols-12 gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="col-span-12 md:col-span-6">
-                    <label className="text-[10px] font-bold uppercase text-slate-400">Nome da empresa</label>
-                    <input
-                      className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
-                      value={tpl.empresa_nome}
-                      onChange={(e) => setTpl({ ...tpl, empresa_nome: e.target.value })}
-                    />
-                  </div>
+              {tplSubTab === 'template' ? (
+                tplLoading ? (
+                  <div className="text-sm text-slate-500">Carregando template...</div>
+                ) : (
+                  <div className="grid grid-cols-12 gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="col-span-12 md:col-span-6">
+                      <label className="text-[10px] font-bold uppercase text-slate-400">Nome da empresa</label>
+                      <input
+                        className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                        value={tpl.empresa_nome}
+                        onChange={(e) => setTpl({ ...tpl, empresa_nome: e.target.value })}
+                      />
+                    </div>
                   <div className="col-span-12 md:col-span-6">
                     <label className="text-[10px] font-bold uppercase text-slate-400">Logo (PNG/JPEG)</label>
                     <div className="mt-1 flex items-center gap-3">
@@ -1160,6 +1340,167 @@ const Configuracoes = () => {
                       Dica: você pode colar exatamente do Excel. O PDF vai respeitar a ordem das linhas.
                     </p>
                   </div>
+                </div>
+              )
+              ) : (
+                <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  {emailCfgErr && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{emailCfgErr}</div>
+                  )}
+                  {emailCfgMsg && (
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">{emailCfgMsg}</div>
+                  )}
+                  {emailCfgLoading ? (
+                    <div className="text-sm text-slate-500">Carregando configuração de e-mail...</div>
+                  ) : (
+                    <>
+                  <label className="flex items-center gap-2 text-[11px] font-black uppercase text-slate-600">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-blue-600"
+                          checked={!!emailCfg.habilitado}
+                          onChange={(e) => setEmailCfg((c) => ({ ...c, habilitado: e.target.checked }))}
+                        />
+                    Habilitar envio por e-mail
+                      </label>
+
+                      <div className="grid grid-cols-12 gap-4">
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">Modo de envio</label>
+                          <select
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 font-bold"
+                            value={emailCfg.modo_envio || 'AUTH'}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, modo_envio: e.target.value }))}
+                          >
+                            <option value="AUTH">SMTP (Usuário/Senha)</option>
+                            <option value="RELAY">SMTP Relay (Sem autenticação)</option>
+                          </select>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Para Microsoft 365 com Basic Auth bloqueado, use <strong>SMTP Relay</strong> + conector liberando o IP.
+                          </p>
+                        </div>
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">IP público (saída) para liberar</label>
+                          <div className="mt-1 flex gap-2">
+                            <input
+                              className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 font-semibold"
+                              value={emailCfg.relay_ip_publico || ''}
+                              onChange={(e) => setEmailCfg((c) => ({ ...c, relay_ip_publico: e.target.value }))}
+                              placeholder="Ex: 200.200.200.200"
+                            />
+                            <button
+                              type="button"
+                              className="rounded border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase text-slate-700 hover:bg-slate-100"
+                              onClick={detectarIpPublicoEmail}
+                            >
+                              Detectar
+                            </button>
+                          </div>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Esse é o IP que a TI deve colocar no conector do Microsoft 365 (SMTP Relay).
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-12 gap-4">
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">Nome do remetente</label>
+                          <input
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={emailCfg.remetente_nome}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, remetente_nome: e.target.value }))}
+                          />
+                        </div>
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">E-mail do remetente</label>
+                          <input
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={emailCfg.remetente_email}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, remetente_email: e.target.value }))}
+                            placeholder="seuemail@dominio.com"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-12 gap-4">
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">SMTP Host</label>
+                          <input
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={emailCfg.smtp_host}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, smtp_host: e.target.value }))}
+                            placeholder="smtp.gmail.com"
+                          />
+                        </div>
+                        <div className="col-span-6 md:col-span-3">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">Porta</label>
+                          <input
+                            type="number"
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={emailCfg.smtp_port}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, smtp_port: e.target.value }))}
+                          />
+                        </div>
+                        <div className="col-span-6 md:col-span-3">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">TLS</label>
+                          <select
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={emailCfg.smtp_use_tls ? '1' : '0'}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, smtp_use_tls: e.target.value === '1' }))}
+                          >
+                            <option value="1">Sim</option>
+                            <option value="0">Não</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-12 gap-4">
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">Usuário SMTP</label>
+                          <input
+                            className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={emailCfg.smtp_usuario}
+                            onChange={(e) => setEmailCfg((c) => ({ ...c, smtp_usuario: e.target.value }))}
+                          />
+                        </div>
+                        <div className="col-span-12 md:col-span-6">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">
+                            Senha SMTP (opcional)
+                          </label>
+                          <div className="mt-1 flex gap-2">
+                            <input
+                              type={emailCfgShowSenha ? 'text' : 'password'}
+                              className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                              value={emailCfg.smtp_senha}
+                              onChange={(e) => setEmailCfg((c) => ({ ...c, smtp_senha: e.target.value }))}
+                              placeholder={emailCfg.senha_configurada ? '•••••• (deixe em branco para manter)' : 'Digite para configurar'}
+                            />
+                            <button
+                              type="button"
+                              className="rounded border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase text-slate-700 hover:bg-slate-100"
+                              onClick={() => setEmailCfgShowSenha((v) => !v)}
+                            >
+                              {emailCfgShowSenha ? 'Ocultar' : 'Mostrar'}
+                            </button>
+                          </div>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Dica: provedores como Gmail exigem <strong>senha de app</strong>.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          disabled={emailCfgSaving}
+                          onClick={salvarEmailCfg}
+                          className="rounded-lg bg-blue-600 px-4 py-2 text-[12px] font-black uppercase text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {emailCfgSaving ? 'Salvando...' : 'Salvar configuração de e-mail'}
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -1485,6 +1826,12 @@ const Configuracoes = () => {
                           Tipo veículo
                         </th>
                         <th className="px-2 py-2 font-black uppercase text-center border-r border-slate-200 w-12">Eixos</th>
+                        <th
+                          className="px-1.5 py-2 font-black uppercase text-center whitespace-nowrap border-r border-slate-100"
+                          title="Taxa de correção (R$)"
+                        >
+                          Taxa corr.
+                        </th>
                         {VEICULO_COLUNAS_FRETE.map((col) => (
                           <th key={col.key} className="px-1.5 py-2 font-black uppercase text-center whitespace-nowrap border-r border-slate-100 last:border-r-0" title={col.label}>
                             {col.short}
@@ -1501,6 +1848,9 @@ const Configuracoes = () => {
                           </td>
                           <td className="px-2 py-1.5 text-center font-black text-blue-700 border-r border-slate-100">
                             {item.eixos_veiculo}
+                          </td>
+                          <td className="px-1 py-1.5 text-right tabular-nums border-r border-slate-50 text-slate-700">
+                            {fmtBRLCell(item.taxa_correcao)}
                           </td>
                           {VEICULO_COLUNAS_FRETE.map((col) => (
                             <td key={col.key} className="px-1 py-1.5 text-right tabular-nums border-r border-slate-50 text-slate-700">
@@ -1564,9 +1914,9 @@ const Configuracoes = () => {
                   ))}
                 </div>
 
-                <div className="flex flex-col md:flex-row gap-6">
+                <div className="flex flex-col md:flex-row gap-6 min-w-0 max-w-full">
                   {/* ÁREA DE CONTEÚDO DINÂMICO */}
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0 max-w-full">
                     {subAbaAtiva === 'tabela' ? (
                       /* --- VISUALIZAÇÃO EM TABELA (LISTA COMPLETA) --- */
                       <div className="bg-white border rounded-xl shadow-sm overflow-hidden">
@@ -1854,9 +2204,9 @@ const Configuracoes = () => {
                         </div>
                       </div>
                     ) : subAbaAtiva === 'markup' ? (
-                      <div className="bg-white border rounded-xl shadow-sm overflow-hidden">
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left text-[11px] border-collapse">
+                      <div className="bg-white border rounded-xl shadow-sm max-w-full min-w-0">
+                        <div className="overflow-x-auto overscroll-x-contain">
+                          <table className="w-max min-w-full text-left text-[11px] border-collapse">
                             <thead className="bg-slate-50 border-b border-slate-200">
                               <tr className="text-slate-600 font-black uppercase">
                                 <th className="px-4 py-3 border-r whitespace-nowrap">LAIR (%)</th>
@@ -1904,22 +2254,7 @@ const Configuracoes = () => {
                                               {Number.isFinite(base) ? `${base.toFixed(4).replace('.', ',')}` : '-'}
                                             </button>
                                           ) : (
-                                            <button
-                                              onClick={() => {
-                                                setEditandoItem(null);
-                                                setFormData({
-                                                  ...initialFormData,
-                                                  markup_nome_cliente: cliente,
-                                                  markup_percentual_base: '',
-                                                  markup_percentual_markup: Number(c26).toFixed(2),
-                                                });
-                                                setIsModalOpen(true);
-                                              }}
-                                              className="w-full py-2 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 font-black"
-                                              title="Cadastrar"
-                                            >
-                                              -
-                                            </button>
+                                            <span className="block w-full py-2 text-slate-300 font-black select-none">-</span>
                                           )}
                                         </td>
                                         <td className="px-3 py-2 border-r text-center bg-amber-50/10">
@@ -1933,7 +2268,7 @@ const Configuracoes = () => {
                                                 {Number.isFinite(mk) ? `${mk.toFixed(2).replace('.', ',')}%` : '-'}
                                               </button>
                                               <button
-                                                onClick={() => handleExcluir(item.id)}
+                                                onClick={() => excluirMarkupCelula(cliente, c26)}
                                                 className="opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700"
                                                 title="Excluir"
                                               >
@@ -1941,22 +2276,7 @@ const Configuracoes = () => {
                                               </button>
                                             </div>
                                           ) : (
-                                            <button
-                                              onClick={() => {
-                                                setEditandoItem(null);
-                                                setFormData({
-                                                  ...initialFormData,
-                                                  markup_nome_cliente: cliente,
-                                                  markup_percentual_base: '',
-                                                  markup_percentual_markup: Number(c26).toFixed(2),
-                                                });
-                                                setIsModalOpen(true);
-                                              }}
-                                              className="w-full py-2 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 font-black"
-                                              title="Cadastrar"
-                                            >
-                                              -
-                                            </button>
+                                            <span className="block w-full py-2 text-slate-300 font-black select-none">-</span>
                                           )}
                                         </td>
                                       </Fragment>
@@ -1965,10 +2285,10 @@ const Configuracoes = () => {
                                 </tr>
                               ))}
 
-                              {markupC26Rows.length === 0 && (
+                              {markupClientes.length === 0 && (
                                 <tr>
                                   <td className="px-4 py-6 text-center text-slate-400 font-bold" colSpan={1 + markupClientes.length * 2}>
-                                    Nenhum markup cadastrado ainda. Clique em “Novo” para começar.
+                                    Nenhum cliente com markup disponível ainda.
                                   </td>
                                 </tr>
                               )}
@@ -2118,6 +2438,32 @@ const Configuracoes = () => {
                           onChange={(e) => setFormData({ ...formData, eixos: e.target.value })}
                         />
                       </div>
+                      <div className="sm:col-span-2">
+                        <label className="text-[10px] font-bold uppercase text-slate-400">Taxa de correção (R$)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="0"
+                          className="w-full border rounded p-2 outline-none focus:border-blue-500 text-right font-semibold tabular-nums"
+                          value={formData.taxa_correcao}
+                          onChange={(e) => setFormData({ ...formData, taxa_correcao: e.target.value })}
+                        />
+                      </div>
+                      <div className="sm:col-span-2 flex items-center gap-2 pt-2">
+                        <input
+                          id="ctrb_somar_taxa_correcao"
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          checked={!!formData.ctrb_somar_taxa_correcao}
+                          onChange={(e) =>
+                            setFormData({ ...formData, ctrb_somar_taxa_correcao: e.target.checked })
+                          }
+                        />
+                        <label htmlFor="ctrb_somar_taxa_correcao" className="text-xs font-semibold text-slate-700 cursor-pointer">
+                          Somar taxa de correção no CTRB orçado (Nova Cotação)
+                        </label>
+                      </div>
                     </div>
                     <p className="mt-4 text-[10px] font-black uppercase text-slate-500">Valores de referência por faixa de distância (R$)</p>
                     <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200">
@@ -2169,6 +2515,24 @@ const Configuracoes = () => {
                   <div>
                     <label className="text-[10px] font-bold uppercase text-slate-400">Nome do Cliente</label>
                     <input className="w-full border rounded p-2 outline-none focus:border-blue-500 font-bold" placeholder="Ex: AMBEV, COCA-COLA..." value={formData.nome_cliente} onChange={e => setFormData({...formData, nome_cliente: e.target.value})} />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold uppercase text-slate-400">Tipo de malha SPOT</label>
+                    <select
+                      className="w-full border rounded p-2 outline-none focus:border-blue-500 font-bold bg-white"
+                      value={formData.malha_spot_tipo || 'DIVERSOS'}
+                      onChange={(e) => setFormData({ ...formData, malha_spot_tipo: e.target.value })}
+                    >
+                      <option value="DIVERSOS">DIVERSOS</option>
+                      <option value="RENAULT">RENAULT</option>
+                      <option value="BOTICARIO">BOTICARIO</option>
+                      <option value="CUSTOM">CUSTOM</option>
+                    </select>
+                    <p className="mt-1 text-[10px] text-slate-500 leading-snug">
+                      Define qual “árvore” da planilha será usada para o % base por LAIR/K/L. Use <strong>CUSTOM</strong> se quiser controlar só pelo
+                      Markup no banco (sem regra automática).
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

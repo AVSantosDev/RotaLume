@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'configuracao',
     'configsistema',
     'cotacoes',
+    'calculadora_frete',
     'corsheaders',
 ]
 

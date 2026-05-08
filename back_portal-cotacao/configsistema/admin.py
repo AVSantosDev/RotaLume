@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import QualpCacheRota, QualpConfiguracao, QualpConsultaHistorico
+from .models import EmailEnvioConfiguracao, QualpCacheRota, QualpConfiguracao, QualpConsultaHistorico
 
 
 @admin.register(QualpConfiguracao)
@@ -19,3 +19,8 @@ class QualpConsultaHistoricoAdmin(admin.ModelAdmin):
 @admin.register(QualpCacheRota)
 class QualpCacheRotaAdmin(admin.ModelAdmin):
     list_display = ('origem_texto', 'destino_texto', 'freight_type', 'eixos', 'consultado_em', 'valido_ate', 'distancia_km')
+
+
+@admin.register(EmailEnvioConfiguracao)
+class EmailEnvioConfiguracaoAdmin(admin.ModelAdmin):
+    list_display = ("singleton_key", "habilitado", "remetente_email", "smtp_host", "smtp_port", "smtp_usuario", "smtp_use_tls", "atualizado_em")

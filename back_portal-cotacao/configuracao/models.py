@@ -272,6 +272,19 @@ class RegistroMarkup(models.Model):
 class ClienteTaxasConfig(models.Model):
     nome_cliente = models.CharField(max_length=100, unique=True)
 
+    MALHA_SPOT_CHOICES = [
+        ("DIVERSOS", "DIVERSOS"),
+        ("RENAULT", "RENAULT"),
+        ("BOTICARIO", "BOTICARIO"),
+        ("CUSTOM", "CUSTOM"),
+    ]
+    malha_spot_tipo = models.CharField(
+        max_length=12,
+        choices=MALHA_SPOT_CHOICES,
+        default="DIVERSOS",
+        help_text="Tipo de malha SPOT (árvore de SE da planilha) usada para calcular o percentual base por LAIR/K/L.",
+    )
+
     # --- SEGURO ---
     seguro_taxa_1 = models.DecimalField(max_digits=8, decimal_places=5)
     seguro_taxa_2 = models.DecimalField(max_digits=8, decimal_places=5)

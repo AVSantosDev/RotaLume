@@ -23,6 +23,10 @@ class QualpConfiguracao(models.Model):
         default=30,
         help_text='Dias em que km, pedágio e frete mín. da mesma OD permanecem válidos sem nova chamada à API.',
     )
+    auto_consultar_ao_selecionar_veiculo = models.BooleanField(
+        default=False,
+        help_text='Se ativo, ao trocar o veículo na Nova Cotação o sistema consulta a QualP automaticamente (quando origem/destino já estiverem preenchidos).',
+    )
     atualizado_em = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -161,3 +165,49 @@ class PropostaTemplate(models.Model):
 
     def __str__(self):
         return 'Template proposta (global)'
+
+
+class EmailEnvioConfiguracao(models.Model):
+    """
+    Configuração única para envio de e-mails (SMTP).
+    Guardado como singleton (1 linha).
+    """
+
+    singleton_key = models.CharField(primary_key=True, max_length=40, default='global', editable=False)
+
+    habilitado = models.BooleanField(default=False)
+    modo_envio = models.CharField(
+        max_length=10,
+        default="AUTH",
+        choices=[("AUTH", "AUTH"), ("RELAY", "RELAY")],
+        help_text="AUTH = SMTP com usuário/senha. RELAY = sem autenticação (via conector/IP liberado).",
+    )
+    remetente_nome = models.CharField(max_length=120, blank=True, default="")
+    remetente_email = models.CharField(max_length=160, blank=True, default="")
+
+    smtp_host = models.CharField(max_length=255, blank=True, default="")
+    smtp_port = models.PositiveSmallIntegerField(default=587)
+    smtp_usuario = models.CharField(max_length=255, blank=True, default="")
+    smtp_senha = models.TextField(blank=True, default="")
+    smtp_use_tls = models.BooleanField(default=True)
+
+    relay_ip_publico = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="IP público de saída do servidor (egress) a ser liberado no conector do Microsoft 365.",
+    )
+
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Configuração e-mail (envio)"
+        verbose_name_plural = "Configurações e-mail (envio)"
+
+    def save(self, *args, **kwargs):
+        if not getattr(self, "singleton_key", None):
+            self.singleton_key = "global"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "E-mail (configuração global)"

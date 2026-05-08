@@ -19,6 +19,7 @@ from configuracao.configuracao_viewsets import (
 )
 from configsistema.qualp_views import QualpConfigApiView, QualpConsultaApiView
 from configsistema.proposta_template_views import PropostaTemplateApiView
+from configsistema.email_views import EmailEgressIpApiView, EmailEnvioConfigApiView, EnviarPropostaEmailApiView
 
 
 router = routers.DefaultRouter()
@@ -41,9 +42,13 @@ router.register(r'markup-config', MarkupClienteFaixaViewSet, basename='markup-co
 urlpatterns = [
    
     path('admin/', admin.site.urls),
+    path('calculadora-frete/', include('calculadora_frete.urls')),
     path('qualp-config/', QualpConfigApiView.as_view(), name='qualp-config'),
     path('qualp/consulta/', QualpConsultaApiView.as_view(), name='qualp-consulta'),
     path('proposta-template/', PropostaTemplateApiView.as_view(), name='proposta-template'),
+    path('email-config/', EmailEnvioConfigApiView.as_view(), name='email-config'),
+    path('email/egress-ip/', EmailEgressIpApiView.as_view(), name='email-egress-ip'),
+    path('email/enviar-proposta/', EnviarPropostaEmailApiView.as_view(), name='email-enviar-proposta'),
     path('',include(router.urls))
    
     #path('api/', include(router.urls)),

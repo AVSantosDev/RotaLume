@@ -42,6 +42,7 @@ class QualpConfigApiView(APIView):
                 'tipo_tabela_frete_padrao': c.tipo_tabela_frete_padrao,
                 'retorno_vazio_padrao': c.retorno_vazio_padrao,
                 'validade_cache_dias': c.validade_cache_dias,
+                'auto_consultar_ao_selecionar_veiculo': bool(getattr(c, 'auto_consultar_ao_selecionar_veiculo', False)),
                 'token_configurado': bool(c.access_token and c.access_token.strip()),
             }
         )
@@ -65,6 +66,8 @@ class QualpConfigApiView(APIView):
             c.retorno_vazio_padrao = bool(data['retorno_vazio_padrao'])
         if 'validade_cache_dias' in data:
             c.validade_cache_dias = max(1, min(366, int(data['validade_cache_dias'])))
+        if 'auto_consultar_ao_selecionar_veiculo' in data:
+            c.auto_consultar_ao_selecionar_veiculo = bool(data['auto_consultar_ao_selecionar_veiculo'])
         c.save()
         return self.get(request)
 
@@ -110,6 +113,7 @@ class QualpConsultaApiView(APIView):
         salvar_historico = bool(d.get('salvar_historico', True))
         salvar_cache = bool(d.get('salvar_cache', True))
         forcar_busca_api = bool(d.get('forcar_busca_api', False))
+        somente_cache = bool(d.get('somente_cache', False))
 
         now = timezone.now()
         dias = max(1, min(366, int(c.validade_cache_dias or 30)))
@@ -153,6 +157,21 @@ class QualpConsultaApiView(APIView):
                         'label_antt_resolution': ar_nome or '',
                     }
                 )
+
+        if somente_cache:
+            # Não consulta a API: apenas informa que não havia cache válido.
+            return Response(
+                {
+                    'fonte_cache': False,
+                    'cache_miss': True,
+                    'origem_texto': loc_a,
+                    'destino_texto': loc_b,
+                    'tabela_frete_usada': freight_type,
+                    'tipo_carga_usada': load_type,
+                    'eixos': axis,
+                    'retorno_vazio': is_empty,
+                }
+            )
 
         base = c.api_base_url or 'https://api.qualp.com.br'
 

@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Save, RotateCcw, FileText, Percent, ChevronDown } from 'lucide-react';
-import { DIVERSOS_LAIR_DIVISORES_PADRAO } from '../lib/markupSpotLookup';
+import {
+  DIVERSOS_LAIR_DIVISORES_PADRAO,
+  isClienteBoticario,
+  markupBasePctPorMalha,
+  markupBasePctPorCliente,
+  normalizeNomeClienteMarkup,
+} from '../lib/markupSpotLookup';
 import { fetchJsonList, fetchJsonPost, getApiBase } from '../config/api';
 import { buscarMunicipiosPorTermo } from '../lib/cidadesIbge';
 import { useSearchParams } from 'react-router-dom';
-import { gerarPropostaTecnicaPdf } from '../lib/propostaPdf';
+import { gerarPropostaTecnicaPdf, gerarPropostaTecnicaPdfBlob } from '../lib/propostaPdf';
+import { buildPropostaHtml } from '../lib/propostaTemplateHtml';
 
 const ANTT_LOAD_TYPES = [
   { value: 'granel_solido', label: 'Granel sólido' },
@@ -51,6 +58,12 @@ function tarifaFaixaPorKm(km, v) {
   return pick('tarifa_acima_500');
 }
 
+function parseVeiculoDecimal(v) {
+  if (v === undefined || v === null || v === '') return 0;
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
 function calcCtrbPorKmEVeiculo(km, v) {
   const rate = tarifaFaixaPorKm(km, v);
   if (rate == null || km == null) return null;
@@ -61,6 +74,9 @@ function calcCtrbPorKmEVeiculo(km, v) {
       ? v.frete_minimo_ate_50km
       : parseFloat(String(v.frete_minimo_ate_50km).replace(',', '.'));
     if (Number.isFinite(piso) && piso > 0) total = Math.max(total, piso);
+  }
+  if (v?.ctrb_somar_taxa_correcao) {
+    total += parseVeiculoDecimal(v.taxa_correcao);
   }
   return total;
 }
@@ -105,6 +121,10 @@ function mergeQualpApiIntoForm(data) {
     typeof v === 'number' && Number.isFinite(v)
       ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
       : '';
+  // Cache-only miss: não apaga o que o usuário já tinha.
+  if (data?.cache_miss) {
+    return (prev) => prev;
+  }
   const pedOk = typeof data.pedagio_total === 'number' && Number.isFinite(data.pedagio_total);
   return (prev) => ({
     ...prev,
@@ -163,6 +183,7 @@ const NovaCotacao = () => {
   const [qualpBuscando, setQualpBuscando] = useState(false);
   const [qualpErro, setQualpErro] = useState('');
   const [qualpEixosFallback, setQualpEixosFallback] = useState(5);
+  const [qualpAutoConsultarVeiculo, setQualpAutoConsultarVeiculo] = useState(false);
   /** DRE — Base lucro: recolhida por padrão; cabeçalho expande/recolhe. */
   const [dreLucroExpanded, setDreLucroExpanded] = useState(false);
   const [cotacaoSalvando, setCotacaoSalvando] = useState(false);
@@ -170,6 +191,14 @@ const NovaCotacao = () => {
   const [cotacaoSalvaOk, setCotacaoSalvaOk] = useState('');
   const [cotacaoCarregando, setCotacaoCarregando] = useState(false);
   const [cotacaoNumero, setCotacaoNumero] = useState(null);
+  const [propostaTemplate, setPropostaTemplate] = useState(null);
+  const [propostaPreviewOpen, setPropostaPreviewOpen] = useState(false);
+  const [propostaPreviewErr, setPropostaPreviewErr] = useState('');
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailErr, setEmailErr] = useState('');
+  const [emailOk, setEmailOk] = useState('');
+  const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
 
   // --- ESTADO DO FORMULÁRIO ---
   const [form, setForm] = useState({
@@ -349,6 +378,9 @@ const NovaCotacao = () => {
         if (typeof c.eixos_padrao === 'number' && Number.isFinite(c.eixos_padrao)) {
           setQualpEixosFallback(c.eixos_padrao);
         }
+        if (typeof c.auto_consultar_ao_selecionar_veiculo === 'boolean') {
+          setQualpAutoConsultarVeiculo(c.auto_consultar_ao_selecionar_veiculo);
+        }
         setForm((f) => ({
           ...f,
           anttLoadType: c.tipo_carga_padrao || f.anttLoadType,
@@ -471,7 +503,8 @@ const NovaCotacao = () => {
 
   // Salva (idempotente) BASE + LAIR no cadastro de Markup (por cliente)
   useEffect(() => {
-    const nomeCliente = (form.tabelaCliente || '').toString().trim().toUpperCase();
+    const cfg = clienteTaxasSelecionado.current;
+    const nomeCliente = normalizeNomeClienteMarkup(form.tabelaCliente || cfg?.nome_cliente || '');
     const brutaPct = form.aliquotaIcmsBruta;
     if (!nomeCliente || brutaPct == null || brutaPct === '') return;
 
@@ -481,29 +514,13 @@ const NovaCotacao = () => {
     const reduzidaPct = Number(form.aliquotaIcmsReduzida ?? 0);
     if (!Number.isFinite(reduzidaPct)) return;
 
-    const almostEq = (a, b, eps = 0.02) => Math.abs(Number(a) - Number(b)) <= eps;
-
-    // Funil dinâmico (bruta/reduzida) => percentual base (em %)
-    const basePctFromAliquotas = (kPct, lPct) => {
-      const k = Number(kPct);
-      const l = Number(lPct);
-      // pares casados
-      if (almostEq(k, 20) && almostEq(l, 20)) return 59.19;
-      if (almostEq(k, 18) && almostEq(l, 18)) return 57.42;
-      if (almostEq(k, 3) && almostEq(l, 3)) return 57.55;
-      if (almostEq(k, 7) && almostEq(l, 7)) return 57.53;
-      if (almostEq(k, 12) && almostEq(l, 12)) return 57.48;
-      // fallback só por L (bruta)
-      if (almostEq(l, 17)) return 57.43;
-      if (almostEq(l, 12)) return 59.23;
-      if (almostEq(l, 7)) return 58.50;
-      if (almostEq(l, 0)) return 57.59;
-      if (almostEq(l, 5)) return 57.55;
-      return null;
-    };
-
-    const basePct = basePctFromAliquotas(reduzidaPct, Number(brutaPct));
-    if (basePct == null) return;
+    // Funil K11/L11 — malha DIVERSOS vs Renault+iguais (espelho das fórmulas SE do Excel por cliente)
+    const malhaTipo = cfg?.malha_spot_tipo || '';
+    const basePct =
+      malhaTipo
+        ? markupBasePctPorMalha(malhaTipo, reduzidaPct, Number(brutaPct), lairDesejada)
+        : markupBasePctPorCliente(nomeCliente, reduzidaPct, Number(brutaPct), lairDesejada);
+    if (!(basePct > 0)) return;
 
     const chave = `${nomeCliente}||${lairDesejada.toFixed(2)}||${Number(brutaPct).toFixed(2)}||${reduzidaPct.toFixed(2)}||${basePct.toFixed(2)}`;
     if (ultimoMarkupSalvoRef.current === chave) return;
@@ -665,7 +682,7 @@ const NovaCotacao = () => {
 
     const ctrb = normalizarNumero(form.ctrbOrcado);
     const lairDesejada = normalizarNumero(form.percentualLairDesejada);
-    const nomeTabela = (form.tabelaCliente || cfg?.nome_cliente || '').toString().trim().toUpperCase();
+    const nomeTabela = normalizeNomeClienteMarkup(form.tabelaCliente || cfg?.nome_cliente || '');
 
     /**
      * FRETE PESO S/ICMS (igual Excel):
@@ -678,7 +695,7 @@ const NovaCotacao = () => {
      * Observação: valor da mercadoria NÃO entra no frete peso.
      */
     const markupRows = (listaMarkupConfig || []).filter(
-      (m) => (m?.nome_cliente || '').toString().trim().toUpperCase() === nomeTabela && nomeTabela !== ''
+      (m) => normalizeNomeClienteMarkup(m?.nome_cliente) === nomeTabela && nomeTabela !== ''
     );
 
     const reduzidaPctAtual =
@@ -695,6 +712,12 @@ const NovaCotacao = () => {
       return lairOk && brutaOk && redOk;
     });
 
+    const malhaTipo = cfg?.malha_spot_tipo || '';
+    const basePctJs =
+      malhaTipo
+        ? markupBasePctPorMalha(malhaTipo, reduzidaPctAtual, brutaPct, lairDesejada)
+        : markupBasePctPorCliente(nomeTabela, reduzidaPctAtual, brutaPct, lairDesejada);
+
     // 1) Preferência: percentual operacional (U5..U9 da planilha) vindo do banco em percentual_base
     //    Pode estar como % (ex.: 59.19) ou como fração (ex.: 0.5919)
     const baseDb = normalizarNumero(faixaMatch?.percentual_base);
@@ -705,26 +728,12 @@ const NovaCotacao = () => {
           ? baseDb
           : 0;
 
-    // 2) Se não tiver no banco: calcula pelo "funil" (bruta/reduzida)
-    if (!(pctOperFrac > 0)) {
-      const basePctFromAliquotas = (kPct, lPct) => {
-        const k = normalizarNumero(kPct);
-        const l = normalizarNumero(lPct);
-        if (almostEq(k, 20) && almostEq(l, 20)) return 59.19;
-        if (almostEq(k, 18) && almostEq(l, 18)) return 57.42;
-        if (almostEq(k, 3) && almostEq(l, 3)) return 57.55;
-        if (almostEq(k, 7) && almostEq(l, 7)) return 57.53;
-        if (almostEq(k, 12) && almostEq(l, 12)) return 57.48;
-        if (almostEq(l, 17)) return 57.43;
-        if (almostEq(l, 12)) return 59.23;
-        if (almostEq(l, 7)) return 58.50;
-        if (almostEq(l, 0)) return 57.59;
-        if (almostEq(l, 5)) return 57.55;
-        return 0;
-      };
-
-      const basePct = basePctFromAliquotas(reduzidaPctAtual, brutaPct);
-      pctOperFrac = basePct > 1 ? basePct / 100 : basePct > 0 ? basePct : 0;
+    // BOTICARIO: malha por LAIR + K/L da planilha — prioridade sobre linhas antigas no banco (ex.: seed 0016 com 59,23%).
+    if ((malhaTipo ? normalizeNomeClienteMarkup(malhaTipo) === 'BOTICARIO' : isClienteBoticario(nomeTabela)) && basePctJs > 0) {
+      pctOperFrac = basePctJs > 1 ? basePctJs / 100 : basePctJs;
+    } else if (!(pctOperFrac > 0)) {
+      // 2) Se não tiver no banco: funil K11/L11 por cliente (DIVERSOS vs Renault+iguais — Excel SPOT)
+      pctOperFrac = basePctJs > 1 ? basePctJs / 100 : basePctJs > 0 ? basePctJs : 0;
     }
 
     // 3) Fallback final: mapa padrão por LAIR (se você cadastrar esses valores como % em Config, isso vira desnecessário)
@@ -912,19 +921,24 @@ const NovaCotacao = () => {
 
     const seq = ++qualpAutoFetchSeqRef.current;
     setQualpErro('');
-    setQualpBuscando(true);
     const payload = buildQualpPayloadFromForm(form, eixosConsultaQualp);
+    // Se a opção automática estiver desligada, consulta apenas o CACHE do banco (não bate na API).
+    const cacheOnly = !qualpAutoConsultarVeiculo;
+    const payloadFinal = cacheOnly
+      ? { ...payload, somente_cache: true, salvar_historico: false, salvar_cache: false }
+      : payload;
+    if (!cacheOnly) setQualpBuscando(true);
 
     (async () => {
       try {
-        const data = await fetchJsonPost('/qualp/consulta/', payload);
+        const data = await fetchJsonPost('/qualp/consulta/', payloadFinal);
         if (seq !== qualpAutoFetchSeqRef.current) return;
         setForm(mergeQualpApiIntoForm(data));
       } catch (e) {
         if (seq !== qualpAutoFetchSeqRef.current) return;
         setQualpErro(e.message || String(e));
       } finally {
-        if (seq === qualpAutoFetchSeqRef.current) setQualpBuscando(false);
+        if (!cacheOnly && seq === qualpAutoFetchSeqRef.current) setQualpBuscando(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- disparo intencional só na troca de veículo
@@ -1148,6 +1162,7 @@ const NovaCotacao = () => {
 
   const gerarPdfProposta = async () => {
     try {
+      setPropostaPreviewErr('');
       const base = getApiBase();
       let template = null;
       try {
@@ -1157,6 +1172,7 @@ const NovaCotacao = () => {
       } catch {
         template = null;
       }
+      setPropostaTemplate(template);
       await gerarPropostaTecnicaPdf({
         numeroCotacao: cotacaoNumero ?? (viewId ? Number(viewId) : null),
         cliente_nome: form.cliente,
@@ -1182,6 +1198,117 @@ const NovaCotacao = () => {
     }
   };
 
+  const carregarTemplateProposta = async () => {
+    const base = getApiBase();
+    try {
+      const res = await fetch(`${base}/proposta-template/`);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+
+  const abrirPreviewProposta = async () => {
+    try {
+      setPropostaPreviewErr('');
+      const tpl = propostaTemplate ?? (await carregarTemplateProposta());
+      setPropostaTemplate(tpl);
+      setPropostaPreviewOpen(true);
+    } catch (e) {
+      setPropostaPreviewErr(e.message || String(e));
+      setPropostaPreviewOpen(true);
+    }
+  };
+
+  const enviarEmailOutlook = async () => {
+    // mantido por compat; agora o envio real é no modal.
+    setEmailModalOpen(true);
+  };
+
+  const abrirModalEmail = async () => {
+    const numero = cotacaoNumero ?? (viewId ? Number(viewId) : null);
+    const subject = `Proposta Comercial${numero ? ` #${numero}` : ''} — ${form.origem}-${form.uf_origem} → ${form.destino}-${form.uf_destino}`;
+    const body =
+      `Olá${form.contato ? `, ${form.contato}` : ''},\n\n` +
+      `Segue proposta comercial em anexo.\n\n` +
+      `Origem: ${form.origem}-${form.uf_origem}\n` +
+      `Destino: ${form.destino}-${form.uf_destino}\n` +
+      `Veículo: ${form.tipoVeiculo}\n\n` +
+      `Atenciosamente,\n`;
+
+    setEmailErr('');
+    setEmailOk('');
+    setEmailForm({
+      to: (emailForm.to || form.email || '').trim(),
+      subject,
+      body,
+    });
+    setEmailModalOpen(true);
+  };
+
+  const enviarEmailDireto = async () => {
+    try {
+      setEmailSending(true);
+      setEmailErr('');
+      setEmailOk('');
+      const base = getApiBase();
+
+      const tpl = propostaTemplate ?? (await carregarTemplateProposta());
+      setPropostaTemplate(tpl);
+      const numero = cotacaoNumero ?? (viewId ? Number(viewId) : null);
+
+      const pdfData = {
+        numeroCotacao: numero,
+        cliente_nome: form.cliente,
+        cliente_cnpj: form.cliente_cnpj,
+        contato: form.contato,
+        email: form.email,
+        origem: form.origem,
+        uf_origem: form.uf_origem,
+        destino: form.destino,
+        uf_destino: form.uf_destino,
+        tipoVeiculo: form.tipoVeiculo,
+        qtdAjudante: form.qtdAjudante,
+        taxaAdicionalEntrega: form.taxaAdicionalEntrega,
+        valorMercadoria: form.valorMercadoria,
+        sIcms: calculos.sIcms,
+        cIcms: calculos.cIcms,
+        frete_all_in_sicms: calculos.sIcms?.total,
+        frete_all_in_cicms: calculos.cIcms?.total,
+        template: tpl,
+      };
+
+      const { filename, blob } = await gerarPropostaTecnicaPdfBlob(pdfData);
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const pdfBase64 = btoa(bin);
+
+      const res = await fetch(`${base}/email/enviar-proposta/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: (emailForm.to || '').trim(),
+          subject: (emailForm.subject || '').trim(),
+          body: emailForm.body || '',
+          filename,
+          pdf_base64: pdfBase64,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+
+      setEmailOk('E-mail enviado com sucesso.');
+    } catch (e) {
+      setEmailErr(e.message || String(e));
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
   const formatBRL = (val) => Number(val).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const formatarMoeda = (valor) => {
@@ -1194,6 +1321,159 @@ const NovaCotacao = () => {
 
   return (
     <div className="max-w-full mx-auto space-y-4 pb-10 text-slate-800 bg-slate-50 p-4">
+      {emailModalOpen && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-6xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="font-black uppercase text-slate-700 text-xs tracking-wider">Enviar proposta por e-mail</div>
+              <button
+                type="button"
+                className="rounded-lg bg-white px-3 py-2 text-xs font-black uppercase text-slate-700 shadow-sm hover:bg-slate-100"
+                onClick={() => setEmailModalOpen(false)}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="grid grid-cols-12 gap-0">
+              <div className="col-span-12 lg:col-span-5 border-b lg:border-b-0 lg:border-r border-slate-200 p-4 space-y-3">
+                {emailErr && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{emailErr}</div>
+                )}
+                {emailOk && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">{emailOk}</div>
+                )}
+
+                <div>
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Para (e-mail do cliente)</label>
+                  <input
+                    className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 font-semibold"
+                    value={emailForm.to}
+                    onChange={(e) => setEmailForm((p) => ({ ...p, to: e.target.value }))}
+                    placeholder="cliente@empresa.com.br"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Puxamos do solicitante quando existir, mas você pode alterar aqui.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Assunto</label>
+                  <input
+                    className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 font-semibold"
+                    value={emailForm.subject}
+                    onChange={(e) => setEmailForm((p) => ({ ...p, subject: e.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Mensagem</label>
+                  <textarea
+                    rows={10}
+                    className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 font-mono"
+                    value={emailForm.body}
+                    onChange={(e) => setEmailForm((p) => ({ ...p, body: e.target.value }))}
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={emailSending}
+                    onClick={enviarEmailDireto}
+                    className="flex-1 rounded-lg bg-blue-600 px-4 py-3 text-xs font-black uppercase tracking-wider text-white shadow hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {emailSending ? 'Enviando...' : 'Enviar e-mail'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEmailModalOpen(false)}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-3 text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-100"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+
+              <div className="col-span-12 lg:col-span-7 bg-slate-50">
+                <div className="p-4 border-b border-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-600">
+                  PDF (prévia)
+                </div>
+                <iframe
+                  title="preview-proposta-email"
+                  className="h-[72vh] w-full bg-white"
+                  srcDoc={buildPropostaHtml({
+                    numeroCotacao: cotacaoNumero ?? (viewId ? Number(viewId) : null),
+                    cliente_nome: form.cliente,
+                    cliente_cnpj: form.cliente_cnpj,
+                    contato: form.contato,
+                    email: form.email,
+                    origem: form.origem,
+                    uf_origem: form.uf_origem,
+                    destino: form.destino,
+                    uf_destino: form.uf_destino,
+                    tipoVeiculo: form.tipoVeiculo,
+                    qtdAjudante: form.qtdAjudante,
+                    taxaAdicionalEntrega: form.taxaAdicionalEntrega,
+                    valorMercadoria: form.valorMercadoria,
+                    sIcms: calculos.sIcms,
+                    cIcms: calculos.cIcms,
+                    frete_all_in_sicms: calculos.sIcms?.total,
+                    frete_all_in_cicms: calculos.cIcms?.total,
+                    template: propostaTemplate,
+                  })}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {propostaPreviewOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-6xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="font-black uppercase text-slate-700 text-xs tracking-wider">Pré-visualização da proposta</div>
+              <button
+                type="button"
+                className="rounded-lg bg-white px-3 py-2 text-xs font-black uppercase text-slate-700 shadow-sm hover:bg-slate-100"
+                onClick={() => setPropostaPreviewOpen(false)}
+              >
+                Fechar
+              </button>
+            </div>
+            {propostaPreviewErr ? (
+              <div className="p-4 text-sm text-red-700 font-semibold">{propostaPreviewErr}</div>
+            ) : (
+              <iframe
+                title="preview-proposta"
+                className="h-[78vh] w-full bg-white"
+                srcDoc={buildPropostaHtml({
+                  numeroCotacao: cotacaoNumero ?? (viewId ? Number(viewId) : null),
+                  cliente_nome: form.cliente,
+                  cliente_cnpj: form.cliente_cnpj,
+                  contato: form.contato,
+                  email: form.email,
+                  origem: form.origem,
+                  uf_origem: form.uf_origem,
+                  destino: form.destino,
+                  uf_destino: form.uf_destino,
+                  tipoVeiculo: form.tipoVeiculo,
+                  qtdAjudante: form.qtdAjudante,
+                  taxaAdicionalEntrega: form.taxaAdicionalEntrega,
+                  valorMercadoria: form.valorMercadoria,
+                  sIcms: calculos.sIcms,
+                  cIcms: calculos.cIcms,
+                  frete_all_in_sicms: calculos.sIcms?.total,
+                  frete_all_in_cicms: calculos.cIcms?.total,
+                  template: propostaTemplate,
+                })}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* HEADER */}
       <div className="flex justify-between items-center bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
         <div className="flex items-center gap-3">
@@ -1316,7 +1596,7 @@ const NovaCotacao = () => {
       <div className="grid grid-cols-12 gap-4 overflow-visible">
         <div className="col-span-12 space-y-4 overflow-visible lg:col-span-5">
           {/* ROTA */}
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+          <div className="bg-white rounded-lg border border-slate-200 overflow-visible shadow-sm">
             <div className="bg-slate-700 text-white px-4 py-1.5 text-xs font-bold uppercase tracking-wider">Rota e Observações</div>
             <div className="p-4 space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -1328,9 +1608,9 @@ const NovaCotacao = () => {
                     onChange={(e) => { setForm({...form, origem: e.target.value, uf_origem: ''}); buscaCidades(e.target.value, setSugestaoOrigem); }}
                   />
                   {sugestaoOrigem.length > 0 && (
-                    <ul className="absolute z-50 w-full bg-white border shadow-lg mt-1 rounded-b-md">
+                    <ul className="absolute z-[120] w-full bg-white border shadow-xl mt-1 rounded-md max-h-56 overflow-y-auto ring-1 ring-black/10">
                       {sugestaoOrigem.map((item, i) => (
-                        <li key={i} onClick={() => selecionarCidade(item, 'origem')} className="px-3 py-2 text-xs hover:bg-blue-50 cursor-pointer border-b"> {item.label} </li>
+                        <li key={i} onMouseDown={(ev) => { ev.preventDefault(); selecionarCidade(item, 'origem'); }} className="px-3 py-2 text-xs hover:bg-blue-50 cursor-pointer border-b border-slate-100 last:border-0"> {item.label} </li>
                       ))}
                     </ul>
                   )}
@@ -1343,9 +1623,9 @@ const NovaCotacao = () => {
                     onChange={(e) => { setForm({...form, destino: e.target.value, uf_destino: ''}); buscaCidades(e.target.value, setSugestaoDestino); }}
                   />
                   {sugestaoDestino.length > 0 && (
-                    <ul className="absolute z-50 w-full bg-white border shadow-lg mt-1 rounded-b-md">
+                    <ul className="absolute z-[120] w-full bg-white border shadow-xl mt-1 rounded-md max-h-56 overflow-y-auto ring-1 ring-black/10">
                       {sugestaoDestino.map((item, i) => (
-                        <li key={i} onClick={() => selecionarCidade(item, 'destino')} className="px-3 py-2 text-xs hover:bg-blue-50 cursor-pointer border-b"> {item.label} </li>
+                        <li key={i} onMouseDown={(ev) => { ev.preventDefault(); selecionarCidade(item, 'destino'); }} className="px-3 py-2 text-xs hover:bg-blue-50 cursor-pointer border-b border-slate-100 last:border-0"> {item.label} </li>
                       ))}
                     </ul>
                   )}
@@ -1760,7 +2040,17 @@ const NovaCotacao = () => {
                 </div>
                 <div className="bg-[#e8f5e9] p-2 rounded border border-[#c8e6c9]">
                   <label className="block text-[10px] font-black uppercase text-[#2e7d32]">% LAIR Desejada</label>
-                  <input type="number" value={form.percentualLairDesejada} className="w-full bg-transparent font-black text-xl text-[#1b5e20] outline-none" onChange={(e) => setForm({...form, percentualLairDesejada: e.target.value})}/>
+                  <select
+                    value={String(form.percentualLairDesejada ?? 20)}
+                    className="w-full bg-transparent font-black text-xl text-[#1b5e20] outline-none"
+                    onChange={(e) => setForm({ ...form, percentualLairDesejada: Number(e.target.value) })}
+                  >
+                    <option value="20">20%</option>
+                    <option value="18">18%</option>
+                    <option value="15">15%</option>
+                    <option value="12">12%</option>
+                    <option value="10">10%</option>
+                  </select>
                 </div>
               </div>
             </div>
@@ -2018,10 +2308,24 @@ const NovaCotacao = () => {
           <div className="flex flex-col gap-3">
             <button
               type="button"
+              onClick={abrirPreviewProposta}
+              className="bg-white hover:bg-slate-100 text-slate-800 px-10 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow transition-all hover:scale-[1.02] active:scale-95 border border-slate-200"
+            >
+              Pré-visualizar
+            </button>
+            <button
+              type="button"
               onClick={gerarPdfProposta}
               className="bg-green-600 hover:bg-green-700 text-white px-10 py-4 rounded-xl font-black uppercase text-sm tracking-widest shadow-xl transition-all hover:scale-105 active:scale-95"
             >
               Gerar Proposta PDF
+            </button>
+            <button
+              type="button"
+              onClick={abrirModalEmail}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-10 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow transition-all hover:scale-[1.02] active:scale-95"
+            >
+              Enviar por e-mail
             </button>
             <p className="text-[9px] text-center text-slate-400 font-bold uppercase italic">Válido por 30 dias</p>
           </div>

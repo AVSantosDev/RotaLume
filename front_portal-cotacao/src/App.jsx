@@ -10,6 +10,7 @@ import ConfigSistema from "./pages/ConfigSistema";
 import CotacaoDedicado from "./pages/CotacaoDedicado";
 import CotacaoFaixaKm from "./pages/CotacaoFaixaKm";
 import ConsultarCotacoes from "./pages/ConsultarCotacoes";
+import CalculadoraFreteRapida from "./pages/CalculadoraFreteRapida";
 
 // 1. Criamos um componente apenas para a tela de Login (com a animação)
 const LoginView = () => {
@@ -58,6 +59,7 @@ function App() {
         {/* Rotas protegidas (Com a Navbar Lateral do Layout) */}
         <Route element={<Layout />}>
           <Route path="/dashboard" element={<h1 className="text-2xl font-bold">Indicadores de Performance</h1>} />
+          <Route path="/calculadora-frete" element={<CalculadoraFreteRapida />} />
           <Route path="/cotacao" element={<NovaCotacao />} />
           <Route path="/cotacao/dedicado" element={<CotacaoDedicado />} />
           <Route path="/cotacao/faixa-km" element={<CotacaoFaixaKm />} />
