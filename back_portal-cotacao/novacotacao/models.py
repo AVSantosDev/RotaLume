@@ -195,6 +195,9 @@ class Cotacao(models.Model):
     dre_desp_fin = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     dre_lair = models.DecimalField(max_digits=20, decimal_places=2, default=0)
 
+    # Cotação matricial por faixa de KM (rotas × faixas × veículos) — ver tela /cotacao/faixa-km
+    faixa_km_snapshot = models.JSONField(default=dict, blank=True)
+
     def save(self, *args, **kwargs):
         if not self.valid_until and self.created_at:
             self.valid_until = self.created_at + timedelta(days=30)

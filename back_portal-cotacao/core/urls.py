@@ -4,6 +4,7 @@ from django.urls import path, include
 from rest_framework import routers
 from novacotacao.novacotacao_viewsets import (VeiculoViewSet, SemireboqueViewSet)
 from cotacoes.viewsets import CotacaoViewSet
+from cotacao_faixa_km.views import CotacaoFaixaKmViewSet
 from configuracao.configuracao_viewsets import (
     IcmsEstadoViewSet,
     MatrizISSViewSet,
@@ -28,6 +29,7 @@ router.register(r'solicitantes', SolicitanteViewSet, basename='solicitante')
 router.register(r'veiculos', VeiculoViewSet, basename='veiculo')
 router.register(r'semireboques', SemireboqueViewSet, basename='semireboque')
 router.register(r'cotacoes', CotacaoViewSet, basename='cotacoes')
+router.register(r'cotacao-faixa-km', CotacaoFaixaKmViewSet, basename='cotacao-faixa-km')
 router.register(r'icms', IcmsEstadoViewSet, basename='icms')
 router.register(r'matriz-iss', MatrizISSViewSet, basename='matriz-iss')
 router.register(r'impostos', ImpostoViewSet, basename='impostos')

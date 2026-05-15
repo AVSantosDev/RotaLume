@@ -39,18 +39,23 @@ services:
         condition: service_healthy
     networks:
       - rotalume_nt
+      # Rede interna do Compose: DNS estável para o Vite (Node) falar com o serviço "backend".
+      # host.docker.internal:8000 costuma dar ECONNREFUSED no Docker Desktop/WSL2.
+      - portal_api
 
   frontend:
     build: ./front_portal-cotacao
     container_name: Rotalume_front
-    command: npm run dev
+    # Com bind mount, o node_modules vem do host — garante xlsx e demais deps antes do Vite.
+    command: sh -c "npm install && npm run dev"
     ports:
       - "5173:5173"
     volumes:
       - ./front_portal-cotacao:/app
-      - /app/node_modules
     environment:
-      - VITE_API_URL=http://localhost:8000
+      # Browser → Vite (5173) → proxy /__api → Django no container backend (rede portal_api).
+      - VITE_USE_DEV_PROXY=1
+      - VITE_DEV_PROXY_TARGET=http://backend:8000
       - CHOKIDAR_USEPOLLING=true
       - WATCHPACK_POLLING=true
     stdin_open: true
@@ -59,10 +64,13 @@ services:
       - backend
     networks:
       - rotalume_nt
+      - portal_api
 
 networks:
   rotalume_nt:
     external: true
+  portal_api:
+    driver: bridge
 
 volumes:
   postgres_data:

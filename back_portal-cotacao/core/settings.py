@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,7 +26,12 @@ SECRET_KEY = 'django-insecure-10=nicdvej!m1c&*8^6+rgqeurvd2n5iv)c0wcnr5dx*uc4sn&
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# Vite no Docker encaminha com Host "backend:8000" (changeOrigin + serviço compose).
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,backend').split(',')
+    if h.strip()
+]
 
 
 # Application definition
@@ -42,6 +48,7 @@ INSTALLED_APPS = [
     'configuracao',
     'configsistema',
     'cotacoes',
+    'cotacao_faixa_km',
     'calculadora_frete',
     'corsheaders',
 ]

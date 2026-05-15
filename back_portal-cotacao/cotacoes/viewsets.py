@@ -13,6 +13,13 @@ class CotacaoViewSet(viewsets.ModelViewSet):
     queryset = Cotacao.objects.all().order_by("-created_at")
     serializer_class = CotacaoSerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        tipo = (self.request.query_params.get("tipo") or "").strip().upper()
+        if tipo:
+            qs = qs.filter(tipo=tipo)
+        return qs
+
     @action(detail=True, methods=["post"])
     def clone(self, request, pk=None):
         src = self.get_object()
@@ -78,6 +85,7 @@ class CotacaoViewSet(viewsets.ModelViewSet):
             dre_lo=src.dre_lo,
             dre_desp_fin=src.dre_desp_fin,
             dre_lair=src.dre_lair,
+            faixa_km_snapshot=src.faixa_km_snapshot or {},
             valid_until=timezone.now() + timedelta(days=30),
         )
         return Response(CotacaoSerializer(cloned).data, status=status.HTTP_201_CREATED)
