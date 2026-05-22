@@ -32,6 +32,12 @@ class CotacaoFaixaKm(models.Model):
         verbose_name='Status da cotação',
         help_text='Livre para fluxos futuros (ex.: rascunho, enviada, aprovada).',
     )
+    antt_tabela = models.CharField(
+        max_length=1,
+        default='A',
+        verbose_name='Tabela ANTT',
+        help_text='Tabela de frete mínimo ANTT (A, B, C ou D) usada na formação de custo.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -83,6 +89,13 @@ class CotacaoFaixaKmLinha(models.Model):
     faixa_id = models.CharField(max_length=80)
     faixa_label = models.CharField(max_length=160)
     km_representativo = models.DecimalField(max_digits=10, decimal_places=2)
+    frequencia = models.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text='Frequência de carga (ex.: viagens/mês).',
+    )
 
     class Meta:
         ordering = ['ordem', 'id']
@@ -104,6 +117,20 @@ class CotacaoFaixaKmCelula(models.Model):
         on_delete=models.PROTECT,
     )
     custo = models.DecimalField(max_digits=16, decimal_places=4)
+    frequencia = models.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text='Frequência de carga deste veículo nesta linha (ex.: viagens/mês).',
+    )
+    km_total = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='KM total do período (editável). Se vazio, usa km representativo × frequência.',
+    )
 
     class Meta:
         constraints = [

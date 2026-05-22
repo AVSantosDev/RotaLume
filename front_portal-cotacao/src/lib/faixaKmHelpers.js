@@ -1,4 +1,6 @@
+import { ccDoVeiculo } from './anttFaixaKmCalc';
 import { normalizeNomeClienteMarkup } from './markupSpotLookup';
+import { tarifaFaixaPorKm } from './veiculoTarifaAntt';
 
 /**
  * Faixas padrão alinhadas ao cadastro de veículo (tarifas por distância).
@@ -84,24 +86,7 @@ export function faixaKmFromMinMax(minKm, maxKm) {
   return { id, label, repKm, minKm: min, maxKm: max };
 }
 
-export function tarifaFaixaPorKm(km, v) {
-  if (!v || km == null) return null;
-  const k = Number(km);
-  const pick = (field) => {
-    const x = v[field];
-    if (x === undefined || x === null || x === '') return 0;
-    const n = typeof x === 'number' ? x : parseFloat(String(x).replace(',', '.'));
-    return Number.isFinite(n) ? n : 0;
-  };
-  if (k <= 50) return pick('tarifa_0_50');
-  if (k <= 100) return pick('tarifa_51_100');
-  if (k <= 150) return pick('tarifa_101_150');
-  if (k <= 200) return pick('tarifa_151_200');
-  if (k <= 300) return pick('tarifa_201_300');
-  if (k <= 400) return pick('tarifa_301_400');
-  if (k <= 500) return pick('tarifa_401_500');
-  return pick('tarifa_acima_500');
-}
+export { tarifaFaixaPorKm } from './veiculoTarifaAntt';
 
 function parseDec(v) {
   if (v === undefined || v === null || v === '') return 0;
@@ -257,6 +242,89 @@ export function calcFreteUmRound(
   };
 }
 
+/** Total frete faixa — 2 casas decimais (exibição R$). */
+function roundMoney2dpFaixa(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return NaN;
+  return Math.round(x * 100) / 100;
+}
+
+/**
+ * Total frete faixa de um round.
+ * R1: total custo × (1 + markup%). R2+: total frete do round anterior × (1 − desconto%).
+ */
+export function calcTotalFreteFaixaFromCusto(
+  totalCustoFaixa,
+  frItem = {},
+  opts = {},
+) {
+  const tc = Number(totalCustoFaixa);
+  if (!(tc > 0)) return NaN;
+  const ord = Number(frItem?.ordem ?? opts.roundOrdem) || 1;
+  const markupR1 = opts.markupR1HeaderPct;
+
+  if (ord <= 1) {
+    let m = Number(markupR1);
+    if (!Number.isFinite(m)) m = Number(frItem?.markup_efetivo_pct);
+    if (!Number.isFinite(m)) m = 0;
+    return roundMoney2dpFaixa(tc * (1 + m / 100));
+  }
+
+  let base = Number(opts.totalFreteRoundAnterior);
+  if (!(base > 0)) return NaN;
+  let v = base;
+  if (frItem.descontos_aplicados) {
+    const df = Number(frItem.desconto_faixa_pct);
+    if (Number.isFinite(df) && df !== 0) v *= 1 - df / 100;
+    const dc = Number(frItem.desconto_coluna_pct);
+    if (Number.isFinite(dc) && dc !== 0) v *= 1 - dc / 100;
+  }
+  return roundMoney2dpFaixa(v);
+}
+
+/** Totais frete faixa por ordem de round (cadeia R1 → R2 → …). */
+export function computeTotaisFreteFaixaPorRound(totalCustoFaixa, fretesPorRound, markupR1HeaderPct) {
+  const sorted = [...(fretesPorRound || [])].sort(
+    (a, b) => (Number(a.ordem) || 0) - (Number(b.ordem) || 0),
+  );
+  const out = {};
+  let prev = null;
+  for (const frItem of sorted) {
+    const ord = Number(frItem.ordem) || 1;
+    const val = calcTotalFreteFaixaFromCusto(totalCustoFaixa, frItem, {
+      roundOrdem: ord,
+      markupR1HeaderPct,
+      totalFreteRoundAnterior: prev,
+    });
+    out[ord] = val;
+    out[String(ord)] = val;
+    if (Number.isFinite(val)) prev = val;
+  }
+  return out;
+}
+
+/**
+ * M% / D% exibido no total frete faixa — alinhado ao cadastro do round, não ao ratio implícito custo×frete.
+ * R1: markup_efetivo_pct ou % do cabeçalho R1 M%. R2+: desconto da faixa/coluna quando houver.
+ */
+export function badgeMarkupTotalFreteFaixa(frItem, roundOrdem, markupR1HeaderPct) {
+  const ord = Number(roundOrdem) || 1;
+  if (ord <= 1) {
+    const mh = Number(markupR1HeaderPct);
+    if (Number.isFinite(mh)) return { tipo: 'M', pct: mh };
+    const m = Number(frItem?.markup_efetivo_pct);
+    if (Number.isFinite(m)) return { tipo: 'M', pct: m };
+    return null;
+  }
+  if (frItem?.descontos_aplicados) {
+    const df = Number(frItem.desconto_faixa_pct);
+    if (Number.isFinite(df) && df !== 0) return { tipo: 'D', pct: df };
+    const dc = Number(frItem.desconto_coluna_pct);
+    if (Number.isFinite(dc) && dc !== 0) return { tipo: 'D', pct: dc };
+  }
+  return null;
+}
+
 /**
  * @param {number[]} vidsOrdered
  * @param {Record<number, number>} custosPorVid
@@ -320,17 +388,23 @@ export function headerStylePorTipoVeiculo(tipo) {
   return 'bg-slate-500 text-white';
 }
 
-function oneRow(origem, destino, fx, veiculos, roundsDef) {
+export function faixaKmRowKey(origem, destino, faixaId) {
+  return `${String(origem || '').toUpperCase()}|${String(destino || '').toUpperCase()}|${faixaId}`;
+}
+
+function oneRow(origem, destino, fx, veiculos, roundsDef, frequencia = null, anttTabela = 'A') {
   const rotaLabel = `${origem}-${destino}-${fx.label}`;
   const vidsOrdered = veiculos.map((v) => v.id);
   const byVeiculoId = {};
   const custosPorVid = {};
   for (const v of veiculos) {
-    const custo = tarifaFaixaPorKm(fx.repKm, v);
+    const custo = tarifaFaixaPorKm(fx.repKm, v, anttTabela);
     const c = custo != null ? Number(custo) : 0;
     const val = Number.isFinite(c) ? c : 0;
     custosPorVid[v.id] = val;
-    byVeiculoId[String(v.id)] = { custo: val };
+    const freqVal =
+      frequencia != null && Number.isFinite(Number(frequencia)) ? Number(frequencia) : null;
+    byVeiculoId[String(v.id)] = { custo: val, frequencia: freqVal };
   }
   const fretesMeta = computeLinhaFretesPorRound(vidsOrdered, custosPorVid, { origem, destino, faixaId: fx.id }, roundsDef);
   for (const vid of vidsOrdered) {
@@ -350,6 +424,7 @@ function oneRow(origem, destino, fx, veiculos, roundsDef) {
     faixaLabel: fx.label,
     faixaId: fx.id,
     kmRepresentativo: Number(fx.repKm),
+    frequencia: frequencia != null && Number.isFinite(Number(frequencia)) ? Number(frequencia) : null,
     byVeiculoId,
   };
 }
@@ -400,7 +475,16 @@ export function buildRoundsDefFromMarkupDescontos(veiculos, markupByVid, markupR
   });
 }
 
-export function buildSnapshotRows({ rotasUf, kmFaixas, veiculos, markupByVid, markupRotas, descontoFaixaByFid, descontoColByVid }) {
+export function buildSnapshotRows({
+  rotasUf,
+  kmFaixas,
+  veiculos,
+  markupByVid,
+  markupRotas,
+  descontoFaixaByFid,
+  descontoColByVid,
+  anttTabela = 'A',
+}) {
   const rows = [];
   for (const [origem, destino] of rotasUf) {
     for (const fx of kmFaixas) {
@@ -412,14 +496,22 @@ export function buildSnapshotRows({ rotasUf, kmFaixas, veiculos, markupByVid, ma
         descontoColByVid,
         fx,
       );
-      rows.push(oneRow(origem, destino, fx, veiculos, roundsDef));
+      rows.push(oneRow(origem, destino, fx, veiculos, roundsDef, null, anttTabela));
     }
   }
   return rows;
 }
 
 /** Uma linha por tripla (origem, destino, faixa), sem produto cartesiano. */
-export function buildSnapshotRowsExplicit(triples, veiculos, markupByVid, markupRotas, descontoFaixaByFid, descontoColByVid) {
+export function buildSnapshotRowsExplicit(
+  triples,
+  veiculos,
+  markupByVid,
+  markupRotas,
+  descontoFaixaByFid,
+  descontoColByVid,
+  anttTabela = 'A',
+) {
   const seen = new Set();
   const rows = [];
   for (const t of triples) {
@@ -442,9 +534,34 @@ export function buildSnapshotRowsExplicit(triples, veiculos, markupByVid, markup
       descontoColByVid,
       fx,
     );
-    rows.push(oneRow(origem, destino, fx, veiculos, roundsDef));
+    const freq =
+      t.frequencia != null && Number.isFinite(Number(t.frequencia)) ? Number(t.frequencia) : null;
+    rows.push(oneRow(origem, destino, fx, veiculos, roundsDef, freq, anttTabela));
   }
   return rows;
+}
+
+/** Mapa veiculo_id → CC (R$) para a tabela ANTT da cotação. */
+export function ccPorVeiculoId(veiculos, anttTabela = 'A') {
+  const out = {};
+  for (const v of veiculos || []) {
+    out[String(v.id)] = ccDoVeiculo(v, anttTabela);
+  }
+  return out;
+}
+
+/** Menor `ordem` entre rounds (round 1 pode não ser literalmente ordem === 1). */
+export function menorOrdemRound(rounds) {
+  let min = Infinity;
+  for (const r of rounds || []) {
+    const o = Number(r.ordem);
+    if (Number.isFinite(o) && o < min) min = o;
+  }
+  return Number.isFinite(min) ? min : 1;
+}
+
+export function isPrimeiroRoundFrete(ordem, rounds) {
+  return Number(ordem) === menorOrdemRound(rounds);
 }
 
 /**
@@ -465,10 +582,13 @@ export function mergeRowsWithDraft(rows, vidsOrdered, custoDraft, roundsDraft) {
           },
         ];
   return rows.map((r) => {
+    const rowKey =
+      r.id != null ? String(r.id) : faixaKmRowKey(r.origem, r.destino, r.faixaId);
     const custosPorVid = {};
     for (const vid of vidsOrdered) {
       const key = String(vid);
-      const d = custoDraft[r.id]?.[key];
+      const draftRow = custoDraft[r.id] ?? custoDraft[rowKey];
+      const d = draftRow?.[key];
       const orig = r.byVeiculoId?.[key]?.custo;
       custosPorVid[vid] = d !== undefined && d !== '' ? Number(d) : Number(orig) || 0;
     }

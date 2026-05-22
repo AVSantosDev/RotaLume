@@ -102,6 +102,7 @@ function rowToTriplet(row) {
   const kFaixa = pickCol(row, ['faixa', 'faixa_km', 'faixakm', 'distancia', 'km', 'intervalo']);
   const kMin = pickCol(row, ['km_min', 'kmin', 'min_km', 'inicio', 'de_km']);
   const kMax = pickCol(row, ['km_max', 'kmax', 'max_km', 'fim', 'ate_km']);
+  const kFreq = pickCol(row, ['frequencia', 'freq', 'frequencia_carga', 'viagens', 'viagens_mes']);
 
   const origem = uf2(kOrig ? row[kOrig] : '');
   const destino = uf2(kDest ? row[kDest] : '');
@@ -111,7 +112,9 @@ function rowToTriplet(row) {
     kMax ? row[kMax] : '',
   );
 
-  return { origem, destino, faixa };
+  const frequencia = kFreq ? parseNumPtBr(row[kFreq]) : null;
+
+  return { origem, destino, faixa, frequencia };
 }
 
 export function sheetRowsToTriplets(rows) {
@@ -124,7 +127,7 @@ export function sheetRowsToTriplets(rows) {
     const vals = Object.values(row).filter((v) => v != null && String(v).trim() !== '');
     if (vals.length === 0) continue;
 
-    const { origem, destino, faixa } = rowToTriplet(row);
+    const { origem, destino, faixa, frequencia } = rowToTriplet(row);
     if (!origem || !destino) {
       errors.push(`Linha ${line}: origem ou destino inválido/ausente.`);
       continue;
@@ -133,7 +136,7 @@ export function sheetRowsToTriplets(rows) {
       errors.push(`Linha ${line}: faixa de KM não reconhecida (${origem}-${destino}).`);
       continue;
     }
-    triplets.push({ origem, destino, faixa });
+    triplets.push({ origem, destino, faixa, frequencia });
   }
   return { triplets, errors };
 }

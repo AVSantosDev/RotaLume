@@ -20,6 +20,12 @@ from .services import build_table_payload
 class CelulaWriteSerializer(serializers.Serializer):
     veiculo_id = serializers.IntegerField()
     custo = serializers.DecimalField(max_digits=16, decimal_places=4)
+    frequencia = serializers.DecimalField(
+        max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
+    km_total = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
 
 
 class LinhaWriteSerializer(serializers.Serializer):
@@ -29,6 +35,9 @@ class LinhaWriteSerializer(serializers.Serializer):
     faixa_id = serializers.CharField(max_length=80)
     faixa_label = serializers.CharField(max_length=160)
     km_representativo = serializers.DecimalField(max_digits=10, decimal_places=2)
+    frequencia = serializers.DecimalField(
+        max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
     celulas = CelulaWriteSerializer(many=True)
 
 
@@ -82,6 +91,7 @@ def _create_rounds(cot, rounds_data, vids):
 
 class CotacaoFaixaKmCreateSerializer(serializers.Serializer):
     cliente_id = serializers.IntegerField()
+    antt_tabela = serializers.CharField(max_length=1, required=False, default='A')
     layout_mode = serializers.ChoiceField(choices=['matrix', 'planilha'])
     pct_operacional_frac = serializers.DecimalField(
         max_digits=10, decimal_places=6, required=False, allow_null=True
@@ -93,6 +103,10 @@ class CotacaoFaixaKmCreateSerializer(serializers.Serializer):
     rounds = serializers.ListField(child=serializers.DictField(), required=False)
 
     def validate(self, attrs):
+        t = str(attrs.get('antt_tabela') or 'A').strip().upper()[:1]
+        if t not in ('A', 'B', 'C', 'D'):
+            raise serializers.ValidationError({'antt_tabela': 'Use A, B, C ou D.'})
+        attrs['antt_tabela'] = t
         if not attrs.get('linhas'):
             raise serializers.ValidationError({'linhas': 'Informe ao menos uma linha.'})
         try:
@@ -124,6 +138,7 @@ class CotacaoFaixaKmCreateSerializer(serializers.Serializer):
             pct_operacional_frac=validated_data.get('pct_operacional_frac'),
             arquivo_importado_nome=validated_data.get('arquivo_importado_nome') or '',
             status_cotacao=str(validated_data.get('status_cotacao') or '')[:64],
+            antt_tabela=validated_data.get('antt_tabela') or 'A',
         )
         veiculos_map = {v.pk: v for v in Veiculo.objects.filter(pk__in={x['id'] for x in validated_data['veiculos']})}
         vids_ordered = [x['id'] for x in validated_data['veiculos']]
@@ -146,12 +161,15 @@ class CotacaoFaixaKmCreateSerializer(serializers.Serializer):
                 faixa_id=str(linha['faixa_id'])[:80],
                 faixa_label=str(linha['faixa_label'])[:160],
                 km_representativo=linha['km_representativo'],
+                frequencia=linha.get('frequencia'),
             )
             for c in linha['celulas']:
                 CotacaoFaixaKmCelula.objects.create(
                     linha=ln,
                     veiculo_id=c['veiculo_id'],
                     custo=c['custo'],
+                    frequencia=c.get('frequencia'),
+                    km_total=c.get('km_total'),
                 )
         rounds_data = validated_data.get('rounds')
         if not rounds_data:
@@ -169,10 +187,19 @@ class CotacaoFaixaKmCreateSerializer(serializers.Serializer):
 class CelulaPatchSerializer(serializers.Serializer):
     veiculo_id = serializers.IntegerField()
     custo = serializers.DecimalField(max_digits=16, decimal_places=4)
+    frequencia = serializers.DecimalField(
+        max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
+    km_total = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
 
 
 class LinhaPatchSerializer(serializers.Serializer):
     id = serializers.IntegerField()
+    frequencia = serializers.DecimalField(
+        max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
     celulas = CelulaPatchSerializer(many=True)
 
 
@@ -196,8 +223,18 @@ class CotacaoFaixaKmUpdateSerializer(serializers.Serializer):
             instance.save(update_fields=['status_cotacao'])
         for ln in validated_data['linhas']:
             ln_obj = CotacaoFaixaKmLinha.objects.get(pk=ln['id'], cotacao=instance)
+            if 'frequencia' in ln:
+                ln_obj.frequencia = ln['frequencia']
+                ln_obj.save(update_fields=['frequencia'])
             for c in ln['celulas']:
-                CotacaoFaixaKmCelula.objects.filter(linha=ln_obj, veiculo_id=c['veiculo_id']).update(custo=c['custo'])
+                upd = {'custo': c['custo']}
+                if 'frequencia' in c:
+                    upd['frequencia'] = c['frequencia']
+                if 'km_total' in c:
+                    upd['km_total'] = c['km_total']
+                CotacaoFaixaKmCelula.objects.filter(linha=ln_obj, veiculo_id=c['veiculo_id']).update(
+                    **upd
+                )
         instance.rounds.all().delete()
         vids_ordered = list(instance.veiculos_inclusos.order_by('ordem', 'id').values_list('veiculo_id', flat=True))
         _create_rounds(instance, validated_data['rounds'], vids_ordered)
@@ -242,6 +279,7 @@ class CotacaoFaixaKmListSerializer(serializers.ModelSerializer):
             'cliente',
             'cliente_nome',
             'layout_mode',
+            'antt_tabela',
             'created_at',
             'arquivo_importado_nome',
             'linhas_count',
@@ -260,6 +298,7 @@ class CotacaoFaixaKmDetailSerializer(serializers.ModelSerializer):
             'cliente',
             'cliente_nome',
             'layout_mode',
+            'antt_tabela',
             'pct_operacional_frac',
             'arquivo_importado_nome',
             'status_cotacao',
@@ -282,6 +321,7 @@ class CotacaoFaixaKmWriteResponseSerializer(serializers.ModelSerializer):
             'cliente',
             'cliente_nome',
             'layout_mode',
+            'antt_tabela',
             'pct_operacional_frac',
             'arquivo_importado_nome',
             'status_cotacao',

@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from .models import (IcmsEstado, Imposto, MatrizISS,
     CustoSeguroCarga, CustoGris, CustoDespesaOperacional, 
-    RegistroMarkup, ClienteTaxasConfig, MarkupClienteFaixa, Cliente, Solicitante)
+    RegistroMarkup, ClienteTaxasConfig, MarkupClienteFaixa, Cliente, Solicitante,
+    Representante)
 
 
 
@@ -68,4 +69,10 @@ class ClienteSerializer(serializers.ModelSerializer):
 class SolicitanteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Solicitante
+        fields = "__all__"
+
+
+class RepresentanteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Representante
         fields = "__all__"

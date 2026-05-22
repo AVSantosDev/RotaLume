@@ -25,7 +25,7 @@ class SolicitanteViewSet(viewsets.ModelViewSet):
     queryset = Solicitante.objects.all()
 
 class VeiculoViewSet(viewsets.ModelViewSet):
-    queryset = Veiculo.objects.all()
+    queryset = Veiculo.objects.prefetch_related('tarifas_antt').all()
     serializer_class = VeiculoSerializer
 
 class SemireboqueViewSet(viewsets.ModelViewSet):

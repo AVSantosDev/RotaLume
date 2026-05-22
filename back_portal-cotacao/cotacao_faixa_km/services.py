@@ -267,11 +267,25 @@ def build_table_payload(cotacao):
             )
             prev = this_r
 
+        celulas_qs = {c.veiculo_id: c for c in ln.celulas.all()}
+        linha_freq = float(ln.frequencia) if ln.frequencia is not None else None
+
         by_v = {}
         for vid in vids:
+            cel = celulas_qs.get(vid)
             custo_f = float(custos.get(vid, 0))
+            freq_cel = None
+            if cel is not None and cel.frequencia is not None:
+                freq_cel = float(cel.frequencia)
+            elif linha_freq is not None:
+                freq_cel = linha_freq
+            km_total_cel = None
+            if cel is not None and cel.km_total is not None:
+                km_total_cel = float(cel.km_total)
             by_v[str(vid)] = {
                 'custo': custo_f,
+                'frequencia': freq_cel,
+                'km_total': km_total_cel,
                 'fretesPorRound': [
                     {
                         'ordem': fr['ordem'],
@@ -294,6 +308,7 @@ def build_table_payload(cotacao):
                 'faixaLabel': ln.faixa_label,
                 'faixaId': faixa_id,
                 'kmRepresentativo': float(ln.km_representativo),
+                'frequencia': float(ln.frequencia) if ln.frequencia is not None else None,
                 'byVeiculoId': by_v,
             }
         )
@@ -315,29 +330,11 @@ def build_table_payload(cotacao):
     return {'veiculos': veiculos, 'rows': linhas_out, 'rounds': rounds_out}
 
 
-def custo_tarifa_cadastro_veiculo(veiculo, km_representativo):
-    """Tarifa do cadastro do veículo conforme km representativo da linha (mesma lógica da planilha do front)."""
-    try:
-        k = float(_d(km_representativo))
-    except Exception:
-        k = 0.0
-    if not k or k != k:  # NaN
-        k = 0.0
-    if k <= 50:
-        return _d(veiculo.tarifa_0_50)
-    if k <= 100:
-        return _d(veiculo.tarifa_51_100)
-    if k <= 150:
-        return _d(veiculo.tarifa_101_150)
-    if k <= 200:
-        return _d(veiculo.tarifa_151_200)
-    if k <= 300:
-        return _d(veiculo.tarifa_201_300)
-    if k <= 400:
-        return _d(veiculo.tarifa_301_400)
-    if k <= 500:
-        return _d(veiculo.tarifa_401_500)
-    return _d(veiculo.tarifa_acima_500)
+def custo_tarifa_cadastro_veiculo(veiculo, km_representativo, antt_tabela='A'):
+    """CCD (R$/km) do cadastro conforme km, faixa e tabela ANTT."""
+    from novacotacao.veiculo_tarifa import custo_km_por_faixa
+
+    return custo_km_por_faixa(km_representativo, veiculo, antt_tabela)
 
 
 def append_veiculo_a_cotacao(cotacao, veiculo, tipo_override=None):
@@ -368,8 +365,9 @@ def append_veiculo_a_cotacao(cotacao, veiculo, tipo_override=None):
         tipo_veiculo=tipo[:255],
     )
 
+    antt = str(getattr(cotacao, 'antt_tabela', None) or 'A').upper()[:1] or 'A'
     for ln in cotacao.linhas.order_by('ordem', 'id'):
-        custo = custo_tarifa_cadastro_veiculo(veiculo, ln.km_representativo)
+        custo = custo_tarifa_cadastro_veiculo(veiculo, ln.km_representativo, antt)
         CotacaoFaixaKmCelula.objects.create(linha=ln, veiculo=veiculo, custo=custo)
 
     rnds = list(cotacao.rounds.order_by('ordem', 'id'))
@@ -423,5 +421,6 @@ def append_linha_a_cotacao(cotacao, *, uf_origem, uf_destino, faixa_id, faixa_la
         v = veiculos_map.get(vid)
         if not v:
             continue
-        custo = custo_map.get(vid, custo_tarifa_cadastro_veiculo(v, km_representativo))
+        antt = str(getattr(cotacao, 'antt_tabela', None) or 'A').upper()[:1] or 'A'
+        custo = custo_map.get(vid, custo_tarifa_cadastro_veiculo(v, km_representativo, antt))
         CotacaoFaixaKmCelula.objects.create(linha=ln, veiculo_id=vid, custo=custo)

@@ -1,10 +1,24 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
-import { Map as MapIcon, Building2, Truck, DollarSign, Plus, Search, ArrowUpDown, Trash2, Settings2, Users, FileText, Save } from 'lucide-react';
-import { getApiBase, fetchJsonList, fetchJsonPost } from '../config/api';
+import { Map as MapIcon, Building2, Truck, DollarSign, Plus, Search, ArrowUpDown, Trash2, Settings2, Users, FileText, Save, UserCircle } from 'lucide-react';
+import { getApiBase, fetchJsonList, fetchJsonListStrict, fetchJsonPost } from '../config/api';
 import { buscarMunicipiosPorTermo } from '../lib/cidadesIbge';
 import { buildPropostaHtml } from '../lib/propostaTemplateHtml';
+import {
+  ANTT_TABELAS_VEICULO,
+  VEICULO_FRETE_KEYS,
+  emptyTarifasAnttForm,
+  tarifasAnttFromVeiculoItem,
+} from '../lib/veiculoTarifaAntt';
 
-/** Colunas de frete por faixa de km (Veículo — frota de tração). */
+/** CC (coeficiente de custo) por tabela ANTT — frota de tração. */
+const VEICULO_COLUNAS_CC = [
+  { key: 'cc_tabela_a', label: 'CC tabela A (R$)', short: 'CC-A' },
+  { key: 'cc_tabela_b', label: 'CC tabela B (R$)', short: 'CC-B' },
+  { key: 'cc_tabela_c', label: 'CC tabela C (R$)', short: 'CC-C' },
+  { key: 'cc_tabela_d', label: 'CC tabela D (R$)', short: 'CC-D' },
+];
+
+/** CCD — custo por km (R$/km) por faixa de distância (Veículo — frota de tração). */
 const VEICULO_COLUNAS_FRETE = [
   { key: 'frete_minimo_ate_50km', label: 'Frete mín. até 50 km', short: 'Mín.≤50' },
   { key: 'tarifa_0_50', label: '0–50 km', short: '0–50' },
@@ -16,12 +30,6 @@ const VEICULO_COLUNAS_FRETE = [
   { key: 'tarifa_401_500', label: '401–500 km', short: '401–500' },
   { key: 'tarifa_acima_500', label: 'Acima 500 km', short: '>500' },
 ];
-
-const emptyVeiculoFreteForm = () =>
-  VEICULO_COLUNAS_FRETE.reduce((acc, { key }) => {
-    acc[key] = '';
-    return acc;
-  }, {});
 
 const fmtBRLCell = (v) => {
   if (v === undefined || v === null || v === '') return '—';
@@ -40,28 +48,58 @@ const parseDecimalFrete = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const veiculoItemIntoForm = (item) => ({
-  ...emptyVeiculoFreteForm(),
-  ...Object.fromEntries(
-    VEICULO_COLUNAS_FRETE.map(({ key }) => [
-      key,
-      item[key] != null && item[key] !== '' ? Number(item[key]) : '',
-    ]),
-  ),
-  taxa_correcao:
-    item.taxa_correcao != null && item.taxa_correcao !== '' ? Number(item.taxa_correcao) : '',
-  ctrb_somar_taxa_correcao: !!item.ctrb_somar_taxa_correcao,
-});
+const veiculoItemIntoForm = (item) => {
+  const tarifas_antt = tarifasAnttFromVeiculoItem(item);
+  const rowA = tarifas_antt.A || {};
+  return {
+    tarifas_antt,
+    tabela_ccd_ativa: 'A',
+    ...Object.fromEntries(
+      VEICULO_FRETE_KEYS.map((key) => [
+        key,
+        rowA[key] != null && rowA[key] !== '' ? rowA[key] : '',
+      ]),
+    ),
+    ...Object.fromEntries(
+      VEICULO_COLUNAS_CC.map(({ key }) => [
+        key,
+        item[key] != null && item[key] !== '' ? Number(item[key]) : '',
+      ]),
+    ),
+    taxa_correcao:
+      item.taxa_correcao != null && item.taxa_correcao !== '' ? Number(item.taxa_correcao) : '',
+    ctrb_somar_taxa_correcao: !!item.ctrb_somar_taxa_correcao,
+  };
+};
 
 const veiculoPayloadFromForm = (fd) => {
+  const tAtiva = fd.tabela_ccd_ativa || 'A';
+  const tarifasBase = { ...(fd.tarifas_antt || emptyTarifasAnttForm()) };
+  tarifasBase[tAtiva] = {
+    ...(tarifasBase[tAtiva] || {}),
+    ...Object.fromEntries(VEICULO_FRETE_KEYS.map((key) => [key, fd[key] ?? ''])),
+  };
+  const tarifas_antt = {};
+  for (const t of ANTT_TABELAS_VEICULO) {
+    const chunk = tarifasBase[t] || {};
+    tarifas_antt[t] = {};
+    for (const key of VEICULO_FRETE_KEYS) {
+      tarifas_antt[t][key] = parseDecimalFrete(chunk[key]);
+    }
+  }
+  const rowA = tarifas_antt.A || {};
   const o = {
     tipo_veiculo: fd.tipo,
     eixos_veiculo: parseInt(String(fd.eixos), 10) || 0,
-    taxa_correcao: parseDecimalFrete(fd.taxa_correcao),
+    taxa_correcao: parseDecimalFrete(fd.cc_tabela_a ?? fd.taxa_correcao),
     ctrb_somar_taxa_correcao: !!fd.ctrb_somar_taxa_correcao,
+    tarifas_antt,
   };
-  for (const { key } of VEICULO_COLUNAS_FRETE) {
+  for (const { key } of VEICULO_COLUNAS_CC) {
     o[key] = parseDecimalFrete(fd[key]);
+  }
+  for (const key of VEICULO_FRETE_KEYS) {
+    o[key] = parseDecimalFrete(rowA[key]);
   }
   return o;
 };
@@ -76,6 +114,7 @@ const Configuracoes = () => {
   const [listaIcms, setListaIcms] = useState([]);
   const [listaIss, setListaIss] = useState([]);
   const [listaVeiculos, setListaVeiculos] = useState([]);
+  const [erroCarregamento, setErroCarregamento] = useState('');
   const [listaSemireboques, setListaSemireboques] = useState([]);
   const [listaTaxas, setListaTaxas] = useState([]);
   const[listaTabelas, setListaTabelas]= useState([]);
@@ -85,14 +124,14 @@ const Configuracoes = () => {
   const [listaDespesas, setListaDespesas] = useState([]);
   const [listaMarkupConfig, setListaMarkupConfig] = useState([]);
 
-  // Proposta Comercial (global)
+  // Comercial (layout, envio, representantes)
   const baseApi = getApiBase();
   const [tplLoading, setTplLoading] = useState(false);
   const [tplSaving, setTplSaving] = useState(false);
   const [tplErr, setTplErr] = useState('');
   const [tplMsg, setTplMsg] = useState('');
   const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
-  const [tplSubTab, setTplSubTab] = useState('template'); // 'template'(layout) | 'email'(envio)
+  const [tplSubTab, setTplSubTab] = useState('template'); // 'template' | 'email' | 'representantes'
   const [tpl, setTpl] = useState({
     empresa_nome: 'ESTRELA DO ORIENTE',
     titulo: 'PROPOSTA COMERCIAL',
@@ -145,6 +184,16 @@ const Configuracoes = () => {
     senha_configurada: false,
   });
   const [emailCfgShowSenha, setEmailCfgShowSenha] = useState(false);
+
+  const [listaRepresentantes, setListaRepresentantes] = useState([]);
+  const [repLoading, setRepLoading] = useState(false);
+  const [repSaving, setRepSaving] = useState(false);
+  const [repErr, setRepErr] = useState('');
+  const [repMsg, setRepMsg] = useState('');
+  const [repEditId, setRepEditId] = useState(null);
+  const [repModalOpen, setRepModalOpen] = useState(false);
+  const [repForm, setRepForm] = useState({ nome: '', percentual_comissao: '', ativo: true });
+
   const [sugestoesIssCidade, setSugestoesIssCidade] = useState([]);
 
   // Base: Clientes e Solicitantes
@@ -272,7 +321,16 @@ const Configuracoes = () => {
     markup_nome_cliente: '',
     markup_percentual_base: '',
     markup_percentual_markup: '',
-    ...emptyVeiculoFreteForm(),
+    tarifas_antt: emptyTarifasAnttForm(),
+    tabela_ccd_ativa: 'A',
+    ...VEICULO_FRETE_KEYS.reduce((acc, key) => {
+      acc[key] = '';
+      return acc;
+    }, {}),
+    ...VEICULO_COLUNAS_CC.reduce((acc, { key }) => {
+      acc[key] = '';
+      return acc;
+    }, {}),
     taxa_correcao: '',
     ctrb_somar_taxa_correcao: false,
   };
@@ -288,44 +346,45 @@ const Configuracoes = () => {
   };
 
   const carregarTudo = async () => {
-    const [
-      icms,
-      iss,
-      veiculos,
-      semireboques,
-      impostos,
-      seguros,
-      gris,
-      despesas,
-      markup,
-      clientesBase,
-      solicitantesBase,
-    ] = await Promise.all([
-      fetchJsonList('/icms/'),
-      fetchJsonList('/matriz-iss/'),
-      fetchJsonList('/veiculos/'),
-      fetchJsonList('/semireboques/'),
-      fetchJsonList('/impostos/'),
-      fetchJsonList('/seguros/'),
-      fetchJsonList('/gris/'),
-      fetchJsonList('/despesas-operacionais/'),
-      fetchJsonList('/markup-config/'),
-      fetchJsonList('/clientes/'),
-      fetchJsonList('/solicitantes/'),
-    ]);
-    setListaIcms(icms);
-    setListaIss(iss);
-    setListaVeiculos(veiculos);
-    setListaSemireboques(semireboques);
+    setErroCarregamento('');
+    const specs = [
+      { path: '/icms/', set: setListaIcms },
+      { path: '/matriz-iss/', set: setListaIss },
+      { path: '/veiculos/', set: setListaVeiculos, label: 'Veículos' },
+      { path: '/semireboques/', set: setListaSemireboques },
+      { path: '/impostos/', set: setListaImpostos },
+      { path: '/seguros/', set: setListaSeguros },
+      { path: '/gris/', set: setListaGris },
+      { path: '/despesas-operacionais/', set: setListaDespesas },
+      { path: '/markup-config/', set: setListaMarkupConfig },
+      { path: '/clientes/', set: setListaClientesBase },
+      { path: '/solicitantes/', set: setListaSolicitantesBaseAll },
+    ];
+    const results = await Promise.allSettled(
+      specs.map((s) => fetchJsonListStrict(s.path)),
+    );
+    const falhas = [];
+    results.forEach((r, i) => {
+      const { set, path, label } = specs[i];
+      if (r.status === 'fulfilled') {
+        set(r.value);
+      } else {
+        console.error('[API]', path, r.reason);
+        set([]);
+        falhas.push(label || path);
+      }
+    });
     setListaTaxas([]);
-    setListaImpostos(impostos);
-    setListaSeguros(seguros);
-    setListaGris(gris);
-    setListaDespesas(despesas);
-    setListaMarkupConfig(markup);
-    setListaClientesBase(clientesBase);
-    setListaSolicitantesBaseAll(solicitantesBase);
-    await carregarTabelaPreco();
+    if (falhas.length) {
+      setErroCarregamento(
+        `Falha ao carregar: ${falhas.join(', ')}. Se acabou de atualizar o sistema, rode as migrations no backend e recarregue a página (F5).`,
+      );
+    }
+    try {
+      await carregarTabelaPreco();
+    } catch (e) {
+      console.error('[API] cliente-taxas-config', e);
+    }
   };
 
   //---CARREGA OS DADOS NA TELA---
@@ -344,7 +403,33 @@ const Configuracoes = () => {
       base = listaIss.filter(i => (i.cidade ?? '').toUpperCase().includes(termo));
     } else if (activeTab === 'veiculos') {
       if (activeSubTab === 'veiculos') {
-        base = listaVeiculos.filter(v => v.tipo_veiculo.toUpperCase().includes(termo));
+        for (const v of listaVeiculos) {
+          const nomeOk = !termo || v.tipo_veiculo.toUpperCase().includes(termo);
+          for (const t of ANTT_TABELAS_VEICULO) {
+            const tabOk = !termo || nomeOk || t === termo;
+            if (!tabOk) continue;
+            const tar = v.tarifas_antt?.[t] || {};
+            const ccKey = `cc_tabela_${t.toLowerCase()}`;
+            base.push({
+              _linhaKey: `${v.id}-${t}`,
+              _veiculoId: v.id,
+              _veiculoRef: v,
+              _tabelaAntt: t,
+              tipo_veiculo: v.tipo_veiculo,
+              eixos_veiculo: v.eixos_veiculo,
+              _ccValor: v[ccKey],
+              frete_minimo_ate_50km: tar.frete_minimo_ate_50km,
+              tarifa_0_50: tar.tarifa_0_50,
+              tarifa_51_100: tar.tarifa_51_100,
+              tarifa_101_150: tar.tarifa_101_150,
+              tarifa_151_200: tar.tarifa_151_200,
+              tarifa_201_300: tar.tarifa_201_300,
+              tarifa_301_400: tar.tarifa_301_400,
+              tarifa_401_500: tar.tarifa_401_500,
+              tarifa_acima_500: tar.tarifa_acima_500,
+            });
+          }
+        }
       } else {
         base = listaSemireboques.filter(s => s.tipo_semireboque.toUpperCase().includes(termo));
       }
@@ -440,6 +525,44 @@ const Configuracoes = () => {
       cancel = true;
     };
   }, [activeTab, baseApi]);
+
+  const carregarRepresentantes = async () => {
+    setRepLoading(true);
+    setRepErr('');
+    try {
+      const lista = await fetchJsonList('/representantes/');
+      setListaRepresentantes(lista);
+    } catch (e) {
+      setRepErr(e.message || String(e));
+    } finally {
+      setRepLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'template') return;
+    carregarRepresentantes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  const parsePercentual = (v) => {
+    if (v === '' || v == null) return null;
+    const s = String(v).trim().replace(/\s/g, '').replace('%', '');
+    const normalized = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s;
+    const n = parseFloat(normalized);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const representantesFiltrados = useMemo(() => {
+    let lista = [...(listaRepresentantes || [])];
+    const q = busca.trim().toLowerCase();
+    if (q) lista = lista.filter((r) => (r.nome || '').toLowerCase().includes(q));
+    lista.sort((a, b) => {
+      const cmp = (a.nome || '').localeCompare(b.nome || '', 'pt-BR');
+      return sortOrder === 'desc' ? -cmp : cmp;
+    });
+    return lista;
+  }, [listaRepresentantes, busca, sortOrder]);
 
   const salvarEmailCfg = async () => {
     setEmailCfgSaving(true);
@@ -564,6 +687,85 @@ const Configuracoes = () => {
   const resetClienteBaseForm = () =>
     setClienteBaseForm({ nome_empresa: '', cnpj: '', endereco: '', cep: '', numero: '' });
   const resetSolicitanteBaseForm = () => setSolicitanteBaseForm({ cliente: '', nome: '', email: '', telefone: '' });
+
+  const resetRepForm = () => {
+    setRepEditId(null);
+    setRepForm({ nome: '', percentual_comissao: '', ativo: true });
+    setRepErr('');
+  };
+
+  const abrirRepModalNovo = () => {
+    resetRepForm();
+    setRepMsg('');
+    setRepModalOpen(true);
+  };
+
+  const editarRepresentante = (item) => {
+    setRepEditId(item.id);
+    setRepForm({
+      nome: item.nome || '',
+      percentual_comissao:
+        item.percentual_comissao != null && item.percentual_comissao !== ''
+          ? String(item.percentual_comissao).replace('.', ',')
+          : '',
+      ativo: item.ativo !== false,
+    });
+    setRepErr('');
+    setRepMsg('');
+    setRepModalOpen(true);
+  };
+
+  const fecharRepModal = () => {
+    setRepModalOpen(false);
+    resetRepForm();
+  };
+
+  const salvarRepresentante = async () => {
+    const nome = repForm.nome?.trim();
+    const pct = parsePercentual(repForm.percentual_comissao);
+    if (!nome) {
+      setRepErr('Informe o nome do representante.');
+      return;
+    }
+    if (pct == null || pct < 0 || pct > 100) {
+      setRepErr('Informe um percentual de comissão entre 0 e 100.');
+      return;
+    }
+    setRepSaving(true);
+    setRepErr('');
+    setRepMsg('');
+    try {
+      const payload = { nome, percentual_comissao: pct, ativo: !!repForm.ativo };
+      if (repEditId) {
+        await apiJson('PUT', `/representantes/${repEditId}/`, payload);
+        setRepMsg('Representante atualizado.');
+      } else {
+        await fetchJsonPost('/representantes/', payload);
+        setRepMsg('Representante cadastrado.');
+      }
+      setRepModalOpen(false);
+      resetRepForm();
+      await carregarRepresentantes();
+    } catch (e) {
+      setRepErr(e.message || String(e));
+    } finally {
+      setRepSaving(false);
+    }
+  };
+
+  const excluirRepresentante = async (id) => {
+    if (!confirm('Excluir este representante?')) return;
+    setRepErr('');
+    setRepMsg('');
+    try {
+      await apiJson('DELETE', `/representantes/${id}/`);
+      if (repEditId === id) fecharRepModal();
+      setRepMsg('Representante excluído.');
+      await carregarRepresentantes();
+    } catch (e) {
+      setRepErr(e.message || String(e));
+    }
+  };
 
   const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
 
@@ -911,7 +1113,11 @@ const Configuracoes = () => {
   };
 
   const abrirEdicao = (item) => {
-    setEditandoItem(item);
+    const editItem =
+      activeTab === 'veiculos' && activeSubTab === 'veiculos' && item._veiculoRef
+        ? item._veiculoRef
+        : item;
+    setEditandoItem(editItem);
 
     if (activeTab === 'taxas' && subAbaAtiva === 'tabela') {
       setFormData({
@@ -975,11 +1181,19 @@ const Configuracoes = () => {
       });
     } else if (activeTab === 'veiculos') {
       if (activeSubTab === 'veiculos') {
+        const veic = item._veiculoRef || item;
+        const tabelaAtiva = item._tabelaAntt || 'A';
+        const into = veiculoItemIntoForm(veic);
+        const rowTar = into.tarifas_antt?.[tabelaAtiva] || {};
         setFormData({
           ...initialFormData,
-          tipo: item.tipo_veiculo ?? '',
-          eixos: item.eixos_veiculo ?? '',
-          ...veiculoItemIntoForm(item),
+          tipo: veic.tipo_veiculo ?? '',
+          eixos: veic.eixos_veiculo ?? '',
+          tabela_ccd_ativa: tabelaAtiva,
+          ...into,
+          ...Object.fromEntries(
+            VEICULO_FRETE_KEYS.map((key) => [key, rowTar[key] ?? '']),
+          ),
         });
       } else {
         setFormData({
@@ -1121,6 +1335,18 @@ const Configuracoes = () => {
   return (
     <div className="max-w-6xl mx-auto space-y-6 min-w-0">
       <h1 className="text-2xl font-bold text-slate-800">Painel de Configurações Operacionais</h1>
+      {erroCarregamento ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+          {erroCarregamento}
+          <button
+            type="button"
+            onClick={() => carregarTudo()}
+            className="ml-3 text-[11px] font-black uppercase text-red-700 underline hover:text-red-900"
+          >
+            Tentar de novo
+          </button>
+        </div>
+      ) : null}
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden max-w-full">
         <div className="border-b border-slate-200 bg-slate-50 min-w-0">
@@ -1137,7 +1363,7 @@ const Configuracoes = () => {
               <option value="veiculos">Veículos e Semirreboques</option>
               <option value="taxas">Impostos e Taxas</option>
               <option value="base">Base Clientes e Solicitantes</option>
-              <option value="template">Proposta Comercial</option>
+              <option value="template">Comercial</option>
             </select>
           </div>
 
@@ -1159,7 +1385,7 @@ const Configuracoes = () => {
               <Users size={16} /> Base Clientes e Solicitantes
             </button>
             <button onClick={() => setActiveTab('template')} className={`flex items-center gap-2 px-3 py-3 text-[12px] font-bold transition whitespace-nowrap ${activeTab === 'template' ? 'bg-white text-blue-600 border-t-2 border-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
-              <FileText size={16} /> Proposta Comercial
+              <FileText size={16} /> Comercial
             </button>
           </div>
         </div>
@@ -1178,7 +1404,11 @@ const Configuracoes = () => {
                     : activeTab === 'base'
                       ? 'Base de Clientes e Solicitantes'
                       : activeTab === 'template'
-                        ? 'Proposta Comercial — Layout e Envio'
+                        ? tplSubTab === 'representantes'
+                          ? 'Comercial — Representantes'
+                          : tplSubTab === 'email'
+                            ? 'Comercial — Envio'
+                            : 'Comercial — Layout'
                       : `Taxas: ${subAbaAtiva}`}
             </h2>
             
@@ -1203,7 +1433,34 @@ const Configuracoes = () => {
                 </button>
               )}
             </div>
-            ) : (
+            ) : tplSubTab === 'representantes' ? (
+              <div className="flex items-center gap-2 w-full md:w-auto">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                  <input
+                    type="text"
+                    placeholder="Buscar representante..."
+                    className="pl-9 pr-4 py-2 border rounded-lg text-sm w-full outline-none focus:border-blue-500"
+                    value={busca}
+                    onChange={(e) => setBusca(e.target.value)}
+                  />
+                </div>
+                <button
+                  onClick={() => setSortOrder((p) => (p === 'asc' ? 'desc' : 'asc'))}
+                  className="p-2 border rounded-lg hover:bg-slate-50 text-slate-600"
+                  type="button"
+                >
+                  <ArrowUpDown size={18} />
+                </button>
+                <button
+                  onClick={abrirRepModalNovo}
+                  type="button"
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-blue-700 font-bold whitespace-nowrap"
+                >
+                  <Plus size={16} /> Novo
+                </button>
+              </div>
+            ) : tplSubTab === 'template' ? (
               <div className="flex items-center gap-2 w-full md:w-auto">
                 <button
                   onClick={visualizarTemplate}
@@ -1220,7 +1477,7 @@ const Configuracoes = () => {
                   <Save size={16} /> {tplSaving ? 'Salvando...' : 'Salvar'}
                 </button>
               </div>
-            )}
+            ) : null}
           </div>
 
           {activeTab === 'template' && (
@@ -1244,6 +1501,15 @@ const Configuracoes = () => {
                 >
                   Envio
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setTplSubTab('representantes')}
+                  className={`flex items-center gap-1.5 px-4 py-2 text-[11px] font-black uppercase tracking-wider ${
+                    tplSubTab === 'representantes' ? 'border-b-2 border-blue-600 text-blue-700' : 'text-slate-400'
+                  }`}
+                >
+                  <UserCircle size={14} /> Representantes
+                </button>
               </div>
 
               {tplErr && (
@@ -1252,7 +1518,143 @@ const Configuracoes = () => {
               {tplMsg && (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">{tplMsg}</div>
               )}
-              {tplSubTab === 'template' ? (
+              {tplSubTab === 'representantes' ? (
+                <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  {repMsg && !repModalOpen && (
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">{repMsg}</div>
+                  )}
+                  {repLoading ? (
+                    <div className="text-sm text-slate-500">Carregando representantes...</div>
+                  ) : (
+                    <div className="overflow-hidden rounded-xl border border-slate-200">
+                      <table className="w-full border-collapse text-left text-[12px]">
+                        <thead className="bg-slate-100 border-b border-slate-200">
+                          <tr>
+                            <th className="px-4 py-3 font-black uppercase text-slate-700">Representante</th>
+                            <th className="px-4 py-3 font-black uppercase text-slate-700">Comissão</th>
+                            <th className="px-4 py-3 font-black uppercase text-slate-700">Status</th>
+                            <th className="px-4 py-3 font-black uppercase text-slate-700 text-right">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {representantesFiltrados.length === 0 ? (
+                            <tr>
+                              <td colSpan={4} className="px-4 py-6 text-center text-slate-500">
+                                Nenhum representante cadastrado.
+                              </td>
+                            </tr>
+                          ) : (
+                            representantesFiltrados.map((r) => (
+                              <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                                <td className="px-4 py-3 font-semibold text-slate-800">{r.nome}</td>
+                                <td className="px-4 py-3 text-slate-700">
+                                  {Number(r.percentual_comissao).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span
+                                    className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${
+                                      r.ativo !== false ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                                    }`}
+                                  >
+                                    {r.ativo !== false ? 'Ativo' : 'Inativo'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => editarRepresentante(r)}
+                                    className="mr-2 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-black uppercase text-slate-700 hover:bg-slate-100"
+                                  >
+                                    Editar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => excluirRepresentante(r.id)}
+                                    className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-black uppercase text-red-700 hover:bg-red-100"
+                                  >
+                                    <Trash2 size={12} className="inline" /> Excluir
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {repModalOpen && (
+                    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
+                      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-slate-200 overflow-hidden">
+                        <div className="flex items-center justify-between border-b bg-slate-50 px-4 py-3">
+                          <div className="text-sm font-black uppercase text-slate-700">
+                            {repEditId ? 'Editar representante' : 'Novo representante'}
+                          </div>
+                          <button
+                            type="button"
+                            className="text-slate-600 hover:text-slate-900 font-black text-sm"
+                            onClick={fecharRepModal}
+                          >
+                            Fechar
+                          </button>
+                        </div>
+                        <div className="p-4 space-y-4">
+                          {repErr && (
+                            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{repErr}</div>
+                          )}
+                          <div>
+                            <label className="text-[10px] font-bold uppercase text-slate-400">Nome do representante</label>
+                            <input
+                              className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                              value={repForm.nome}
+                              onChange={(e) => setRepForm((p) => ({ ...p, nome: e.target.value }))}
+                              placeholder="Ex.: João Silva"
+                              autoFocus
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold uppercase text-slate-400">Comissão (%)</label>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              className="mt-1 w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                              value={repForm.percentual_comissao}
+                              onChange={(e) => setRepForm((p) => ({ ...p, percentual_comissao: e.target.value }))}
+                              placeholder="Ex.: 5,00"
+                            />
+                          </div>
+                          <label className="flex items-center gap-2 text-[11px] font-black uppercase text-slate-600">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 accent-blue-600"
+                              checked={!!repForm.ativo}
+                              onChange={(e) => setRepForm((p) => ({ ...p, ativo: e.target.checked }))}
+                            />
+                            Ativo
+                          </label>
+                          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                            <button
+                              type="button"
+                              onClick={fecharRepModal}
+                              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-[11px] font-black uppercase text-slate-700 hover:bg-slate-100"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              type="button"
+                              disabled={repSaving}
+                              onClick={salvarRepresentante}
+                              className="rounded-lg bg-blue-600 px-4 py-2 text-[11px] font-black uppercase text-white hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              {repSaving ? 'Salvando...' : repEditId ? 'Salvar alterações' : 'Cadastrar'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : tplSubTab === 'template' ? (
                 tplLoading ? (
                   <div className="text-sm text-slate-500">Carregando template...</div>
                 ) : (
@@ -1826,11 +2228,11 @@ const Configuracoes = () => {
                           Tipo veículo
                         </th>
                         <th className="px-2 py-2 font-black uppercase text-center border-r border-slate-200 w-12">Eixos</th>
-                        <th
-                          className="px-1.5 py-2 font-black uppercase text-center whitespace-nowrap border-r border-slate-100"
-                          title="Taxa de correção (R$)"
-                        >
-                          Taxa corr.
+                        <th className="px-1.5 py-2 font-black uppercase text-center border-r border-slate-100 w-10" title="Tabela ANTT">
+                          Tab.
+                        </th>
+                        <th className="px-1.5 py-2 font-black uppercase text-center border-r border-slate-100" title="CC — coeficiente de custo (R$)">
+                          CC
                         </th>
                         {VEICULO_COLUNAS_FRETE.map((col) => (
                           <th key={col.key} className="px-1.5 py-2 font-black uppercase text-center whitespace-nowrap border-r border-slate-100 last:border-r-0" title={col.label}>
@@ -1842,18 +2244,21 @@ const Configuracoes = () => {
                     </thead>
                     <tbody>
                       {dadosFiltrados.map((item) => (
-                        <tr key={item.id} className="border-b border-slate-100 hover:bg-blue-50/40">
+                        <tr key={item._linhaKey || item.id} className="border-b border-slate-100 hover:bg-blue-50/40">
                           <td className="sticky left-0 z-[1] bg-white px-2 py-1.5 font-bold text-slate-800 uppercase border-r border-slate-100">
                             {item.tipo_veiculo}
                           </td>
                           <td className="px-2 py-1.5 text-center font-black text-blue-700 border-r border-slate-100">
                             {item.eixos_veiculo}
                           </td>
-                          <td className="px-1 py-1.5 text-right tabular-nums border-r border-slate-50 text-slate-700">
-                            {fmtBRLCell(item.taxa_correcao)}
+                          <td className="px-1.5 py-1.5 text-center font-black text-violet-800 border-r border-slate-100">
+                            {item._tabelaAntt || '—'}
+                          </td>
+                          <td className="px-1 py-1.5 text-right tabular-nums border-r border-slate-50 text-slate-700 font-semibold">
+                            {fmtBRLCell(item._ccValor)}
                           </td>
                           {VEICULO_COLUNAS_FRETE.map((col) => (
-                            <td key={col.key} className="px-1 py-1.5 text-right tabular-nums border-r border-slate-50 text-slate-700">
+                            <td key={`${item._linhaKey}-${col.key}`} className="px-1 py-1.5 text-right tabular-nums border-r border-slate-50 text-slate-700">
                               {fmtBRLCell(item[col.key])}
                             </td>
                           ))}
@@ -1861,9 +2266,11 @@ const Configuracoes = () => {
                             <button type="button" onClick={() => abrirEdicao(item)} className="text-blue-600 hover:text-blue-800 font-bold mr-2">
                               Editar
                             </button>
-                            <button type="button" onClick={() => handleExcluir(item.id)} className="text-red-500 hover:text-red-700 font-bold">
-                              Excluir
-                            </button>
+                            {item._tabelaAntt === 'A' ? (
+                              <button type="button" onClick={() => handleExcluir(item._veiculoId)} className="text-red-500 hover:text-red-700 font-bold">
+                                Excluir
+                              </button>
+                            ) : null}
                           </td>
                         </tr>
                       ))}
@@ -2439,17 +2846,69 @@ const Configuracoes = () => {
                         />
                       </div>
                       <div className="sm:col-span-2">
-                        <label className="text-[10px] font-bold uppercase text-slate-400">Taxa de correção (R$)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="0"
-                          className="w-full border rounded p-2 outline-none focus:border-blue-500 text-right font-semibold tabular-nums"
-                          value={formData.taxa_correcao}
-                          onChange={(e) => setFormData({ ...formData, taxa_correcao: e.target.value })}
-                        />
+                        <label className="text-[10px] font-bold uppercase text-slate-400">
+                          Tabela ANTT — cadastrar CCD (R$/km)
+                        </label>
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          {ANTT_TABELAS_VEICULO.map((t) => {
+                            const ativa = (formData.tabela_ccd_ativa || 'A') === t;
+                            return (
+                              <button
+                                key={t}
+                                type="button"
+                                onClick={() => {
+                                  setFormData((fd) => {
+                                    const prev = fd.tabela_ccd_ativa || 'A';
+                                    const nextTar = { ...(fd.tarifas_antt || emptyTarifasAnttForm()) };
+                                    nextTar[prev] = {
+                                      ...(nextTar[prev] || {}),
+                                      ...Object.fromEntries(
+                                        VEICULO_FRETE_KEYS.map((key) => [key, fd[key] ?? '']),
+                                      ),
+                                    };
+                                    const row = nextTar[t] || {};
+                                    return {
+                                      ...fd,
+                                      tarifas_antt: nextTar,
+                                      tabela_ccd_ativa: t,
+                                      ...Object.fromEntries(
+                                        VEICULO_FRETE_KEYS.map((key) => [key, row[key] ?? '']),
+                                      ),
+                                    };
+                                  });
+                                }}
+                                className={`min-w-[2.5rem] px-3 py-1.5 rounded-md text-xs font-black border transition ${
+                                  ativa
+                                    ? 'bg-violet-600 text-white border-violet-700 shadow-sm'
+                                    : 'bg-white text-slate-600 border-slate-200 hover:border-violet-300'
+                                }`}
+                              >
+                                {t}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-[9px] text-slate-400 mt-1">
+                          Alterne A, B, C ou D e preencha as faixas de CCD de cada tabela. Ao salvar, todas são gravadas.
+                        </p>
                       </div>
+                      <p className="sm:col-span-2 mt-2 text-[10px] font-black uppercase text-slate-500">
+                        CC — coeficiente de custo (R$) por tabela ANTT
+                      </p>
+                      {VEICULO_COLUNAS_CC.map((col) => (
+                        <div key={col.key} className="sm:col-span-1">
+                          <label className="text-[10px] font-bold uppercase text-slate-400">{col.label}</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="0"
+                            className="w-full border rounded p-2 outline-none focus:border-blue-500 text-right font-semibold tabular-nums"
+                            value={formData[col.key] ?? ''}
+                            onChange={(e) => setFormData({ ...formData, [col.key]: e.target.value })}
+                          />
+                        </div>
+                      ))}
                       <div className="sm:col-span-2 flex items-center gap-2 pt-2">
                         <input
                           id="ctrb_somar_taxa_correcao"
@@ -2461,11 +2920,14 @@ const Configuracoes = () => {
                           }
                         />
                         <label htmlFor="ctrb_somar_taxa_correcao" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                          Somar taxa de correção no CTRB orçado (Nova Cotação)
+                          Somar CC (tabela ANTT escolhida) no CTRB orçado (Nova Cotação)
                         </label>
                       </div>
                     </div>
-                    <p className="mt-4 text-[10px] font-black uppercase text-slate-500">Valores de referência por faixa de distância (R$)</p>
+                    <p className="mt-4 text-[10px] font-black uppercase text-slate-500">
+                      CCD — custo por km (R$/km) — tabela{' '}
+                      <span className="text-violet-700">{formData.tabela_ccd_ativa || 'A'}</span>
+                    </p>
                     <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200">
                       <table className="w-full min-w-[720px] border-collapse text-[10px]">
                         <thead>
@@ -2487,8 +2949,22 @@ const Configuracoes = () => {
                                   min="0"
                                   placeholder="0"
                                   className="w-full min-w-[70px] rounded border border-slate-200 px-1 py-1.5 text-right font-semibold tabular-nums outline-none focus:border-blue-500"
-                                  value={formData[col.key]}
-                                  onChange={(e) => setFormData({ ...formData, [col.key]: e.target.value })}
+                                  value={formData[col.key] ?? ''}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const t = formData.tabela_ccd_ativa || 'A';
+                                    setFormData((fd) => ({
+                                      ...fd,
+                                      [col.key]: val,
+                                      tarifas_antt: {
+                                        ...(fd.tarifas_antt || emptyTarifasAnttForm()),
+                                        [t]: {
+                                          ...(fd.tarifas_antt?.[t] || {}),
+                                          [col.key]: val,
+                                        },
+                                      },
+                                    }));
+                                  }}
                                 />
                               </td>
                             ))}

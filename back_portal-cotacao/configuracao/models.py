@@ -307,3 +307,25 @@ class ClienteTaxasConfig(models.Model):
 
     def __str__(self):
         return self.nome_cliente
+
+
+class Representante(models.Model):
+    """Representante comercial e percentual de comissão."""
+
+    nome = models.CharField(max_length=255)
+    percentual_comissao = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        help_text="Percentual de comissão (ex.: 5.00 = 5%).",
+    )
+    ativo = models.BooleanField(default=True)
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["nome"]
+        verbose_name = "Representante"
+        verbose_name_plural = "Representantes"
+
+    def __str__(self):
+        return f"{self.nome} ({self.percentual_comissao}%)"

@@ -17,6 +17,7 @@ from configuracao.configuracao_viewsets import (
     MarkupClienteFaixaViewSet,
     ClienteViewSet,
     SolicitanteViewSet,
+    RepresentanteViewSet,
 )
 from configsistema.qualp_views import QualpConfigApiView, QualpConsultaApiView
 from configsistema.proposta_template_views import PropostaTemplateApiView
@@ -26,6 +27,7 @@ from configsistema.email_views import EmailEgressIpApiView, EmailEnvioConfigApiV
 router = routers.DefaultRouter()
 router.register(r'clientes', ClienteViewSet, basename='cliente')
 router.register(r'solicitantes', SolicitanteViewSet, basename='solicitante')
+router.register(r'representantes', RepresentanteViewSet, basename='representante')
 router.register(r'veiculos', VeiculoViewSet, basename='veiculo')
 router.register(r'semireboques', SemireboqueViewSet, basename='semireboque')
 router.register(r'cotacoes', CotacaoViewSet, basename='cotacoes')

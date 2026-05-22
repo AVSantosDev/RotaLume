@@ -15,10 +15,11 @@ from .models import (
     MarkupClienteFaixa,
     Cliente,
     Solicitante,
+    Representante,
 )
 from .configuracao_serializer import (IcmsEstadoSerializer, ImpostoSerializer, MatrizISSSerializer, CustoSeguroCargaSerializer, CustoGrisSerializer,
     CustoDespesaOperacionalSerializer, RegistroMarkupSerializer, ClienteTaxasConfigSerializer, MarkupClienteFaixaSerializer,
-    ClienteSerializer, SolicitanteSerializer)
+    ClienteSerializer, SolicitanteSerializer, RepresentanteSerializer)
 from django.db.models import Q
 from decimal import Decimal, InvalidOperation
 
@@ -179,6 +180,18 @@ class SolicitanteViewSet(viewsets.ModelViewSet):
         cliente_id = self.request.query_params.get("cliente")
         if cliente_id:
             qs = qs.filter(cliente_id=cliente_id)
+        return qs
+
+
+class RepresentanteViewSet(viewsets.ModelViewSet):
+    queryset = Representante.objects.all()
+    serializer_class = RepresentanteSerializer
+
+    def get_queryset(self):
+        qs = Representante.objects.all()
+        termo = self.request.query_params.get("search")
+        if termo:
+            qs = qs.filter(Q(nome__icontains=termo))
         return qs
 
 

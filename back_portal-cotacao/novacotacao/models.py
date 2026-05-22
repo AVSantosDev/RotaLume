@@ -62,21 +62,83 @@ class Veiculo(models.Model):
     tarifa_acima_500 = models.DecimalField(
         max_digits=14, decimal_places=2, default=0, verbose_name="Acima de 500 km (R$)"
     )
+    cc_tabela_a = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0,
+        verbose_name="CC tabela A (R$)",
+    )
+    cc_tabela_b = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0,
+        verbose_name="CC tabela B (R$)",
+    )
+    cc_tabela_c = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0,
+        verbose_name="CC tabela C (R$)",
+    )
+    cc_tabela_d = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0,
+        verbose_name="CC tabela D (R$)",
+    )
     taxa_correcao = models.DecimalField(
         max_digits=14,
         decimal_places=2,
         default=0,
-        verbose_name="Taxa de correção (R$)",
+        verbose_name="CC legado / CTRB Nova Cotação (R$)",
     )
     ctrb_somar_taxa_correcao = models.BooleanField(
         default=False,
-        verbose_name="Somar taxa de correção no CTRB orçado",
+        verbose_name="Somar CC no CTRB orçado (Nova Cotação)",
     )
 
     def __str__(self):
         return f"{self.tipo_veiculo} ({self.eixos_veiculo})"
 
 
+class VeiculoTarifaAntt(models.Model):
+    """CCD e frete mínimo por faixa de km, por tabela ANTT (A, B, C, D)."""
+
+    TABELA_CHOICES = [
+        ('A', 'Tabela A'),
+        ('B', 'Tabela B'),
+        ('C', 'Tabela C'),
+        ('D', 'Tabela D'),
+    ]
+
+    veiculo = models.ForeignKey(
+        Veiculo,
+        on_delete=models.CASCADE,
+        related_name='tarifas_antt',
+    )
+    tabela = models.CharField(max_length=1, choices=TABELA_CHOICES)
+
+    frete_minimo_ate_50km = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0, verbose_name='Frete mín. até 50 km (R$)'
+    )
+    tarifa_0_50 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_51_100 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_101_150 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_151_200 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_201_300 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_301_400 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_401_500 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tarifa_acima_500 = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['veiculo', 'tabela'], name='uniq_veiculo_tarifa_antt'),
+        ]
+        verbose_name = 'Tarifa ANTT do veículo'
+        verbose_name_plural = 'Tarifas ANTT do veículo'
+
+    def __str__(self):
+        return f'{self.veiculo_id} — tabela {self.tabela}'
 
 
 class Semireboque(models.Model):
