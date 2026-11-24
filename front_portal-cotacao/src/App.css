@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* Definição da animação */
+@keyframes drive {
+  0% {
+    transform: translateX(-150px);
+  }
+  100% {
+    transform: translateX(500px);
+  }
+}
+
+/* Classes de animação */
+.animate-truck-main {
+  animation: drive 9s linear infinite;
+}
+
+.animate-truck-follow {
+  animation: drive 9s linear infinite;
+  animation-delay: -3.5s; /* Faz o segundo caminhão começar no meio do trajeto */
+}

@@ -1,0 +1,35 @@
+# Dependências — a imagem faz npm install; não enviar node_modules do host
+node_modules
+.pnpm-store
+
+# Saídas de build
+dist
+build
+.vite
+.next
+out
+storybook-static
+
+# Testes / cobertura
+coverage
+.nyc_output
+
+# Variáveis (secrets não devem ir para camadas da imagem)
+.env
+.env.*
+!.env.example
+
+# Git e IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Logs e OS
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db

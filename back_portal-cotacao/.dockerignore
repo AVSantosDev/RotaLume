@@ -1,0 +1,44 @@
+# Ambientes virtuais locais
+venv/
+.venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.tox/
+*.egg-info/
+.eggs/
+
+# Base de dados local (usa Postgres no compose)
+*.sqlite3
+
+# Ficheiros geridos em runtime (uploads, collectstatic)
+media/
+staticfiles/
+
+# Segredos
+.env
+.env.*
+!.env.example
+
+# Git e IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Logs e OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Docker (não entram no COPY . .)
+Dockerfile
+.dockerignore
